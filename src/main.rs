@@ -9,6 +9,8 @@ mod device;
 mod dng;
 mod photo;
 mod portal;
+#[cfg(feature = "preview")]
+mod preview;
 mod video;
 mod viewfinder;
 

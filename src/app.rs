@@ -56,7 +56,8 @@ pub struct App {
     last_meta: Metadata,
     /// AE/AF lock is on; with the exposure time it locked at, if it did.
     locked: bool,
-    lock_exposure: Option<f64>,
+    /// The exposure time and gain the lock holds, before compensation.
+    lock_exposure: Option<(f64, f64)>,
     /// Device turn from the accelerometer, and the display turn it implies.
     device: i32,
     natural_landscape: Option<bool>,
@@ -137,6 +138,8 @@ pub enum Msg {
     HideFocus(u32),
     /// Hold focus and exposure where the viewfinder was long-pressed.
     Lock(f64, f64),
+    #[cfg(feature = "preview")]
+    PreviewSet(String, f64),
     LockExposure(f64),
     Suspended(bool),
     /// Degrees the device is turned clockwise from its natural orientation.
@@ -196,7 +199,6 @@ pub struct Widgets {
     mode_row: adw::ComboRow,
     mode_handler: glib::SignalHandlerId,
     raw_row: adw::SwitchRow,
-    raw_toggle: gtk::ToggleButton,
     quick: gtk::Box,
     resolution: gtk::MenuButton,
     resolution_action: gio::SimpleAction,
@@ -351,6 +353,7 @@ impl App {
 
     /// `icon` None shows a spinner.
     fn show_status(&self, w: &Widgets, icon: Option<&str>, title: &str, description: Option<&str>, retry: bool) {
+        perf!("status", "{title}");
         match icon {
             Some(icon) => w.status.set_icon_name(Some(icon)),
             None => w.status.set_paintable(Some(&adw::SpinnerPaintable::new(Some(&w.status)))),
@@ -490,6 +493,25 @@ impl App {
     }
 }
 
+async fn request_access() -> Access {
+    #[cfg(feature = "preview")]
+    if let Some(access) = crate::preview::access() {
+        return access;
+    }
+    portal::request_access().await
+}
+
+/// Exposure time and gain for `ev` stops of compensation on a held exposure:
+/// time first, then gain once time is at its limit.
+fn compensate(exposure: f64, gain: f64, ev: f64, max_exposure: f64, max_gain: f64) -> (f64, f64) {
+    let wanted = exposure * 2f64.powf(ev);
+    if wanted <= max_exposure {
+        (wanted, gain)
+    } else {
+        (max_exposure, (gain * wanted / max_exposure).min(max_gain))
+    }
+}
+
 /// The newest photo already in the gallery, as a thumbnail.
 fn last_photo() -> Option<(PathBuf, Thumb)> {
     let path = std::fs::read_dir(crate::photo::pictures_dir())
@@ -529,10 +551,17 @@ impl Component for App {
         // until it answers.
         let backend = {
             let input = sender.input_sender().clone();
-            Rc::new(LibcameraBackend::spawn(move |ev| {
+            let emit = move |ev| {
                 let _ = input.send(Msg::Camera(ev));
-            }))
+            };
+            #[cfg(feature = "preview")]
+            let backend = crate::preview::backend(emit.clone()).unwrap_or_else(|| LibcameraBackend::spawn(emit));
+            #[cfg(not(feature = "preview"))]
+            let backend = LibcameraBackend::spawn(emit);
+            Rc::new(backend)
         };
+        #[cfg(feature = "preview")]
+        crate::preview::install(&window, &sender);
         // Pictures read best against dark surroundings.
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
         let settings = gio::SettingsSchemaSource::default()
@@ -548,29 +577,21 @@ impl Component for App {
         let grid_action = toggle_action(settings.as_ref(), "grid");
         let raw_action = toggle_action(settings.as_ref(), "raw");
         let info_action = toggle_action(settings.as_ref(), "show-info");
-        for a in [&grid_action, &raw_action, &info_action] {
+        let full_resolution_action = toggle_action(settings.as_ref(), "full-resolution");
+        for a in [&grid_action, &raw_action, &info_action, &full_resolution_action] {
             app.add_action(a);
         }
 
         // Header: quick settings over the viewfinder
-        let grid_toggle = gtk::ToggleButton::builder().icon_name("view-grid-symbolic").tooltip_text(gettext("Grid")).action_name("app.grid").build();
-        label(&grid_toggle, &gettext("Grid"));
         let timer_label = gtk::Label::builder().css_classes(["numeric"]).visible(false).build();
         let timer_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         timer_content.append(&gtk::Image::from_icon_name("alarm-symbolic"));
         timer_content.append(&timer_label);
         let timer_button = gtk::Button::builder().child(&timer_content).css_classes(["flat", "timer"]).build();
-        let raw_toggle = gtk::ToggleButton::builder()
-            .label(gettext("RAW"))
-            .tooltip_text(gettext("Also Save RAW (DNG)"))
-            .action_name("app.raw")
-            .css_classes(["raw-toggle"])
-            .visible(false)
-            .build();
         let quick = gtk::Box::builder().spacing(2).visible(false).build();
-        quick.append(&grid_toggle);
+        // Grid and RAW live in Preferences and the controls: a phone header
+        // has room for four buttons beside the window's own.
         quick.append(&timer_button);
-        quick.append(&raw_toggle);
         let resolution = gtk::MenuButton::builder().label("4:3").tooltip_text(gettext("Resolution")).css_classes(["flat", "numeric"]).build();
         quick.append(&resolution);
 
@@ -628,7 +649,12 @@ impl Component for App {
             viewfinder.add_controller(pinch);
             let s = sender.clone();
             let hold = gtk::GestureLongPress::new();
-            hold.connect_pressed(move |_, x, y| s.input(Msg::Lock(x, y)));
+            hold.connect_pressed(move |g, x, y| {
+                perf!("long-press", "{x:.0},{y:.0}");
+                // Claimed, so letting go is not also a tap that unlocks.
+                g.set_state(gtk::EventSequenceState::Claimed);
+                s.input(Msg::Lock(x, y));
+            });
             viewfinder.add_controller(hold);
         }
 
@@ -826,6 +852,23 @@ impl Component for App {
         sheet_capture.set_action_name(Some("app.capture"));
         controls_header.pack_start(&sheet_capture);
         let controls_page = adw::ToolbarView::builder().content(&controls_scroller).build();
+        // Space and Enter take the picture wherever focus is, except in the
+        // controls, where they work the focused control.
+        {
+            let keys = gtk::EventControllerKey::new();
+            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let (s, page) = (sender.clone(), controls_page.clone());
+            keys.connect_key_pressed(move |ctl, key, _, mods| {
+                let shutter = matches!(key, gdk::Key::space | gdk::Key::Return | gdk::Key::KP_Enter) && mods.is_empty();
+                let focus = ctl.widget().and_downcast::<gtk::Window>().and_then(|w| gtk::prelude::GtkWindowExt::focus(&w));
+                if shutter && focus.is_none_or(|f| !f.is_ancestor(&page)) {
+                    s.input(Msg::Capture);
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            window.add_controller(keys);
+        }
         controls_page.add_top_bar(&controls_header);
 
         let split = adw::OverlaySplitView::builder()
@@ -1019,7 +1062,7 @@ impl Component for App {
             glib::timeout_add_local_once(Duration::from_millis(600), move || s.input(Msg::PortalSlow));
         }
 
-        sender.oneshot_command(async { CmdOut::Access(portal::request_access().await) });
+        sender.oneshot_command(async { CmdOut::Access(request_access().await) });
         {
             let input = sender.input_sender().clone();
             std::thread::spawn(move || {
@@ -1081,7 +1124,8 @@ impl Component for App {
             window.connect_map(|_| perf!("window-mapped"));
             let stats = stats.clone();
             let connected = std::cell::Cell::new(false);
-            viewfinder.connect_realize(move |vf| {
+            // On the window, so a status page's first paint counts too.
+            window.connect_realize(move |vf| {
                 let stats = stats.clone();
                 let first = std::cell::Cell::new(true);
                 if let Some(clock) = vf.frame_clock().filter(|_| !connected.replace(true)) {
@@ -1113,7 +1157,6 @@ impl Component for App {
             mode_row,
             mode_handler,
             raw_row,
-            raw_toggle,
             quick,
             resolution,
             resolution_action,
@@ -1134,6 +1177,9 @@ impl Component for App {
             chips,
         };
         model.show_timer(&widgets);
+        if crate::perf::on() {
+            widgets.controls_toggle.connect_active_notify(|t| perf!("controls", "open={}", t.is_active()));
+        }
         if video {
             widgets.modes.set_active_name(Some("video"));
         }
@@ -1188,7 +1234,7 @@ impl Component for App {
             Msg::Retry => {
                 self.show_status(w, None, &gettext("Starting Camera…"), None, false);
                 if !self.granted {
-                    sender.oneshot_command(async { CmdOut::Access(portal::request_access().await) });
+                    sender.oneshot_command(async { CmdOut::Access(request_access().await) });
                 } else {
                     self.reopen(w, self.camera, None);
                 }
@@ -1237,7 +1283,6 @@ impl Component for App {
                 w.quick.set_visible(true);
                 w.capture.set_sensitive(!self.saving);
                 w.raw_row.set_visible(session.raw);
-                w.raw_toggle.set_visible(session.raw);
 
                 w.mode_row.block_signal(&w.mode_handler);
                 let labels: Vec<String> = session.modes.iter().map(mode_label).collect();
@@ -1441,6 +1486,7 @@ impl Component for App {
                 self.show_timer(w);
             }
             Msg::TapFocus(x, y) => {
+                perf!("tap", "{x:.0},{y:.0}");
                 // A tap after a lock lets go of it, and focuses there.
                 self.unlock(w);
                 let (Some(session), Some(panel)) = (&self.session, &self.panel) else { return };
@@ -1493,9 +1539,24 @@ impl Component for App {
             }
             Msg::Suspended(_) => {}
             Msg::Lock(x, y) => self.lock(w, x, y),
+            #[cfg(feature = "preview")]
+            Msg::PreviewSet(name, value) => {
+                if let Some(p) = &self.panel
+                    && !p.set(&name, value)
+                {
+                    let names: Vec<(i32, String)> = self.session.iter().flat_map(|s| s.controls.iter()).filter(|c| c.name == name).flat_map(|c| c.enums.clone()).collect();
+                    if let Some((_, n)) = names.iter().find(|(v, _)| *v as f64 == value) {
+                        let suffix = n.trim_start_matches(name.as_str()).to_string();
+                        p.select(&name, &suffix);
+                    }
+                }
+            }
             Msg::LockExposure(ev) => {
-                if let (Some(base), Some(panel)) = (self.lock_exposure, &self.panel) {
-                    panel.set("ExposureTime", base * 2f64.powf(ev));
+                if let (Some((exposure, gain)), Some(panel), Some(session)) = (self.lock_exposure, &self.panel, &self.session) {
+                    let max = |name: &str| session.controls.iter().find(|c| c.name == name).map_or(f64::MAX, |c| c.max);
+                    let (e, g) = compensate(exposure, gain, ev, max("ExposureTime"), max("AnalogueGain"));
+                    panel.set("ExposureTime", e);
+                    panel.set("AnalogueGain", g);
                 }
             }
             Msg::Orientation(d) => {
@@ -1642,6 +1703,7 @@ impl App {
     fn lock(&mut self, w: &Widgets, x: f64, y: f64) {
         let Some(panel) = self.panel.clone() else { return };
         if w.viewfinder.to_sensor(x, y).is_none() {
+            perf!("lock-refused", "outside the picture at {x:.0},{y:.0}");
             return;
         }
         let meta = &self.last_meta;
@@ -1656,7 +1718,7 @@ impl App {
             }
             panel.set("ExposureTime", e);
             panel.set("AnalogueGain", g);
-            self.lock_exposure = Some(e);
+            self.lock_exposure = Some((e, g));
             held.push("AE");
         }
         if let Some(d) = meta.get("LensPosition")
@@ -1667,9 +1729,11 @@ impl App {
             held.push("AF");
         }
         if held.is_empty() {
+            perf!("lock-refused", "nothing to hold");
             return;
         }
         self.locked = true;
+        perf!("lock", "held={}", held.join("/"));
         w.lock_label.set_label(&format!("{} {}", held.join("/"), gettext("LOCK")));
         w.lock_ev.set_value(0.0);
         w.lock_ev.set_visible(self.lock_exposure.is_some());
@@ -1689,6 +1753,7 @@ impl App {
         if !std::mem::take(&mut self.locked) {
             return;
         }
+        perf!("unlock");
         self.lock_exposure = None;
         w.lock_pill.set_visible(false);
         w.focus_ring.set_visible(false);
@@ -1712,6 +1777,7 @@ impl App {
 
     fn set_zoom(&mut self, w: &Widgets, zoom: f64) {
         self.zoom = zoom.clamp(1.0, 4.0);
+        perf!("zoom", "{:.1}", self.zoom);
         w.viewfinder.set_zoom(self.zoom as f32);
         let text = if (self.zoom - self.zoom.round()).abs() < 0.05 { format!("{:.0}×", self.zoom) } else { format!("{:.1}×", self.zoom) };
         set_chip(&w.chips.zoom, &text, self.zoom > 1.0);
@@ -1741,6 +1807,7 @@ impl App {
     }
 
     fn preferences(&self, w: &Widgets) {
+        perf!("preferences");
         let Some(settings) = &self.settings else { return };
         let switch = |key: &str, title: &str, subtitle: &str| {
             let row = adw::SwitchRow::builder().title(title).subtitle(subtitle).build();
@@ -1792,4 +1859,29 @@ fn thumbnail(still: &Still) -> Thumb {
         }
     }
     Thumb { rgba, width: tw, height: th, rotation: still.info.rotation }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compensation_moves_time_then_gain() {
+        assert_eq!(compensate(10000.0, 2.0, 1.0, 100000.0, 16.0), (20000.0, 2.0));
+        assert_eq!(compensate(10000.0, 2.0, -1.0, 100000.0, 16.0), (5000.0, 2.0));
+        // Time tops out at 30 ms; the rest of two stops goes to gain.
+        let (e, g) = compensate(20000.0, 2.0, 2.0, 30000.0, 16.0);
+        assert_eq!(e, 30000.0);
+        assert!((g - 2.0 * 80000.0 / 30000.0).abs() < 1e-9);
+        assert_eq!(compensate(20000.0, 8.0, 2.0, 30000.0, 16.0).1, 16.0);
+    }
+
+    #[test]
+    fn video_and_aspect_names() {
+        let m = |width, height| Mode { width, height };
+        assert_eq!(video_name(&m(4032, 2272)), "4K");
+        assert_eq!(video_name(&m(2016, 1136)), "1080p");
+        assert_eq!(aspect(&m(4032, 3032)), "4:3");
+        assert_eq!(aspect(&m(3280, 1846)), "16:9");
+    }
 }

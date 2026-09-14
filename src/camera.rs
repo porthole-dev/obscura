@@ -112,10 +112,9 @@ pub struct Frame {
     pub fourcc: u32,
     pub fd: RawFd,
     pub offset: u32,
-    pub size: usize,
     /// CPU copy, only when the backend was told the dmabuf path failed.
     pub bytes: Option<Vec<u8>>,
-    ret: Option<(Request, Sender<Internal>, u64)>,
+    pub(crate) ret: Option<(Request, Sender<Internal>, u64)>,
 }
 
 impl std::fmt::Debug for Frame {
@@ -209,8 +208,8 @@ pub enum Internal {
 }
 
 pub struct LibcameraBackend {
-    tx: Sender<Internal>,
-    slot: Arc<FrameSlot>,
+    pub(crate) tx: Sender<Internal>,
+    pub(crate) slot: Arc<FrameSlot>,
 }
 
 /// The newest viewfinder frame, and nothing older: a frame the interface has
@@ -452,7 +451,7 @@ enum Purpose {
 
 /// The smallest mode of `photo`'s shape that is still sharp on a phone or
 /// laptop screen; binned modes also run faster.
-fn viewfinder_mode(modes: &[Mode], photo: Mode) -> Mode {
+pub(crate) fn viewfinder_mode(modes: &[Mode], photo: Mode) -> Mode {
     let ratio = |m: &Mode| m.width as f64 / m.height.max(1) as f64;
     modes
         .iter()
@@ -484,6 +483,19 @@ fn seed(controls: &[ControlDesc], meta: &Metadata) -> Vec<(u32, Vec<f64>)> {
         out.extend(find("LensPosition").map(|c| (c.id, vec![lens])));
     }
     out
+}
+
+/// Whether a Still session's frame shows the held exposure and gain (within
+/// 10%). Without anything to compare, the third frame will do.
+// ponytail: eight frames is the patience for a held exposure to show up; a
+// camera that ignores manual controls still gets its photo.
+fn settled(expect: (Option<f64>, Option<f64>), exposure: Option<f64>, gain: Option<f64>, frames: u32) -> bool {
+    let near = |want: Option<f64>, got: Option<f64>| match (want, got) {
+        (Some(w), Some(g)) => (g - w).abs() <= w.abs() * 0.1 + 1e-3,
+        (Some(_), None) => false,
+        _ => frames >= 3,
+    };
+    frames >= 8 || (near(expect.0, exposure) && near(expect.1, gain))
 }
 
 fn control_value(desc: &ControlDesc, value: &[f64]) -> Option<ControlValue> {
@@ -540,7 +552,10 @@ impl Live {
             Some(size) => Mode { width: size.width, height: size.height },
             None => Mode { width: view_size.width, height: view_size.height },
         };
-        let mode = if want_raw || photo.is_none() { view_mode } else { photo.unwrap() };
+        let mode = match photo {
+            Some(p) if !want_raw => p,
+            _ => view_mode,
+        };
 
         let mut alloc = FrameBufferAllocator::new(&cam);
         let view_bufs = alloc.alloc(&view).map_err(|e| format!("alloc: {e}"))?;
@@ -674,14 +689,7 @@ impl Live {
         if self.purpose == Purpose::Still {
             self.frames_seen += 1;
             let meta = read_metadata(req.metadata());
-            let near = |want: Option<f64>, got: Option<f64>| match (want, got) {
-                (Some(w), Some(g)) => (g - w).abs() <= w.abs() * 0.1 + 1.0,
-                _ => self.frames_seen >= 3,
-            };
-            // ponytail: eight frames is the patience for a held exposure to
-            // show up; a camera that ignores manual controls still gets a photo.
-            let settled = (near(self.expect.0, meta.get("ExposureTime")) && near(self.expect.1, meta.get("AnalogueGain"))) || self.frames_seen >= 8;
-            if !settled {
+            if !settled(self.expect, meta.get("ExposureTime"), meta.get("AnalogueGain"), self.frames_seen) {
                 return self.requeue(req);
             }
             perf!("still-settled", "frames={}", self.frames_seen);
@@ -698,7 +706,7 @@ impl Live {
         else {
             return self.requeue(req);
         };
-        let Some((fd, offset, size, bytes, still)) = self.inspect(&req, copy, width, height, stride, fourcc) else {
+        let Some((fd, offset, bytes, still)) = self.inspect(&req, copy, width, height, stride, fourcc) else {
             return self.requeue(req);
         };
         if let Some(still) = still {
@@ -713,10 +721,10 @@ impl Live {
             return self.requeue(req);
         }
         if copy {
-            slot.deliver(Frame { width, height, stride, fourcc, fd, offset, size, bytes, ret: None }, emit);
+            slot.deliver(Frame { width, height, stride, fourcc, fd, offset, bytes, ret: None }, emit);
             return self.requeue(req);
         }
-        slot.deliver(Frame { width, height, stride, fourcc, fd, offset, size, bytes: None, ret: Some((req, tx.clone(), self.generation)) }, emit);
+        slot.deliver(Frame { width, height, stride, fourcc, fd, offset, bytes: None, ret: Some((req, tx.clone(), self.generation)) }, emit);
     }
 
     /// Everything a completed request's buffers are needed for, read while
@@ -730,11 +738,11 @@ impl Live {
         height: u32,
         stride: u32,
         fourcc: u32,
-    ) -> Option<(RawFd, u32, usize, Option<Vec<u8>>, Option<Box<Still>>)> {
+    ) -> Option<(RawFd, u32, Option<Vec<u8>>, Option<Box<Still>>)> {
         let buf = req.buffer::<Buffer>(&self.view)?;
         let planes = buf.planes();
         let plane = planes.get(0)?;
-        let (fd, offset, size) = (plane.fd(), plane.offset().unwrap_or(0) as u32, plane.len());
+        let (fd, offset) = (plane.fd(), plane.offset().unwrap_or(0) as u32);
         let data = buf.data();
         let view = data.first()?;
         let bytes = copy.then(|| view.to_vec());
@@ -773,7 +781,7 @@ impl Live {
             perf!("still-copied", "ms={:.1} bytes={}", copy_started.elapsed().as_secs_f64() * 1e3, still.rgba.len());
             still
         });
-        Some((fd, offset, size, bytes, still))
+        Some((fd, offset, bytes, still))
     }
 
     fn requeue(&mut self, mut req: Request) {
@@ -1018,6 +1026,38 @@ fn read_metadata(list: &ControlList) -> Metadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn still_waits_for_the_held_exposure() {
+        let held = (Some(20000.0), Some(4.0));
+        assert!(!settled(held, Some(33333.0), Some(4.0), 1));
+        assert!(settled(held, Some(20500.0), Some(4.1), 2));
+        assert!(!settled(held, None, None, 5));
+        assert!(settled(held, Some(33333.0), Some(1.0), 8));
+        assert!(!settled((None, None), None, None, 2));
+        assert!(settled((None, None), None, None, 3));
+    }
+
+    #[test]
+    fn seed_holds_what_auto_chose() {
+        let d = |id, name: &str, enums: &[&str]| ControlDesc {
+            id,
+            name: name.into(),
+            kind: Kind::Int,
+            len: 1,
+            min: 0.0,
+            max: 1.0,
+            def: vec![0.0],
+            enums: enums.iter().enumerate().map(|(i, n)| (i as i32, n.to_string())).collect(),
+        };
+        let controls = [d(1, "ExposureTimeMode", &["ExposureTimeModeAuto", "ExposureTimeModeManual"]), d(2, "ExposureTime", &[]), d(3, "AnalogueGain", &[]), d(4, "AfMode", &["AfModeManual", "AfModeAuto", "AfModeContinuous"]), d(5, "LensPosition", &[])];
+        let mut meta = Metadata::default();
+        for (k, v) in [("ExposureTime", 16666.0), ("AnalogueGain", 2.0), ("LensPosition", 1.5)] {
+            meta.values.insert(k.into(), vec![v]);
+        }
+        let seeded = seed(&controls, &meta);
+        assert_eq!(seeded, vec![(1, vec![1.0]), (2, vec![16666.0]), (3, vec![2.0]), (4, vec![0.0]), (5, vec![1.5])]);
+    }
 
     #[test]
     fn viewfinder_takes_the_binned_mode_of_the_same_shape() {

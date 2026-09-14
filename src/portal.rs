@@ -21,14 +21,13 @@ pub async fn request_access() -> Access {
     if !ashpd::is_sandboxed() && std::env::var_os("OBSCURA_SKIP_PORTAL").is_some() {
         return Access::Unavailable("OBSCURA_SKIP_PORTAL is set".into());
     }
-    if !ashpd::is_sandboxed() {
-        // Host apps have no app id of their own; registering gives the portal
-        // one to store the permission under.
-        if let Ok(id) = ashpd::AppID::try_from(APP_ID) {
-            if let Err(e) = ashpd::register_host_app(id).await {
-                log::info!("host app registration: {e}");
-            }
-        }
+    // Host apps have no app id of their own; registering gives the portal
+    // one to store the permission under.
+    if !ashpd::is_sandboxed()
+        && let Ok(id) = ashpd::AppID::try_from(APP_ID)
+        && let Err(e) = ashpd::register_host_app(id).await
+    {
+        log::info!("host app registration: {e}");
     }
     let camera = match Camera::new().await {
         Ok(c) => c,
