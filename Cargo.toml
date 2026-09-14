@@ -10,6 +10,7 @@ relm4 = { version = "0.11", features = ["libadwaita", "gnome_48"] }
 libcamera = "0.7"
 gst = { package = "gstreamer", version = "0.25" }
 gst-app = { package = "gstreamer-app", version = "0.25" }
+gst-video = { package = "gstreamer-video", version = "0.25" }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "camera"] }
 gettext-rs = { version = "0.8", features = ["gettext-system"] }
 log = "0.4"

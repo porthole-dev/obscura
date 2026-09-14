@@ -80,6 +80,8 @@ pub struct Session {
     pub modes: Vec<Mode>,
     pub mode: Mode,
     pub view: Mode,
+    /// DRM fourcc of the viewfinder stream.
+    pub fourcc: u32,
     pub controls: Vec<ControlDesc>,
     pub raw: bool,
     /// Frame rate range the configured mode allows, if the camera reports it.
@@ -98,7 +100,7 @@ pub struct Frame {
     pub size: usize,
     /// CPU copy, only when the backend was told the dmabuf path failed.
     pub bytes: Option<Vec<u8>>,
-    ret: Option<(Request, Sender<Internal>)>,
+    ret: Option<(Request, Sender<Internal>, u64)>,
 }
 
 impl std::fmt::Debug for Frame {
@@ -109,8 +111,8 @@ impl std::fmt::Debug for Frame {
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        if let Some((req, tx)) = self.ret.take() {
-            let _ = tx.send(Internal::Returned(req));
+        if let Some((req, tx, generation)) = self.ret.take() {
+            let _ = tx.send(Internal::Returned(req, generation));
         }
     }
 }
@@ -153,6 +155,7 @@ pub enum Cmd {
     Open { camera: usize, mode: Option<Mode> },
     SetControl { id: u32, value: Vec<f64> },
     Capture,
+    Record(Option<std::sync::Arc<crate::video::Recorder>>),
     CopyFrames(bool),
     Close,
 }
@@ -174,7 +177,10 @@ pub trait Backend {
 pub enum Internal {
     Cmd(Cmd),
     Done(Request),
-    Returned(Request),
+    /// A request whose frame the UI let go of, tagged with the session it
+    /// came from: one that outlives its session must not be requeued into
+    /// the next one.
+    Returned(Request, u64),
 }
 
 pub struct LibcameraBackend {
@@ -265,6 +271,11 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, emit: impl Fn(Event)) {
                     live.capture_next = true;
                 }
             }
+            Internal::Cmd(Cmd::Record(recorder)) => {
+                if let Some(live) = session.as_mut() {
+                    live.recorder = recorder;
+                }
+            }
             Internal::Cmd(Cmd::CopyFrames(on)) => copy_frames = on,
             Internal::Cmd(Cmd::Close) => {
                 if let Some(live) = session.take() {
@@ -275,9 +286,9 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, emit: impl Fn(Event)) {
                 Some(live) => live.completed(req, copy_frames, &tx, &emit),
                 None => drop(req),
             },
-            Internal::Returned(req) => match session.as_mut() {
-                Some(live) => live.requeue(req),
-                None => drop(req),
+            Internal::Returned(req, generation) => match session.as_mut() {
+                Some(live) if live.generation == generation => live.requeue(req),
+                _ => drop(req),
             },
         }
     }
@@ -292,6 +303,8 @@ struct Live {
     info: Session,
     pending: UniquePtr<ControlList>,
     capture_next: bool,
+    recorder: Option<std::sync::Arc<crate::video::Recorder>>,
+    generation: u64,
     last_meta: Instant,
     outstanding: usize,
 }
@@ -369,6 +382,7 @@ impl Live {
             modes,
             mode,
             view: Mode { width: view_size.width, height: view_size.height },
+            fourcc: view.configuration().map(|c| c.get_pixel_format().fourcc()).unwrap_or(0),
             controls,
             raw: raw_stream.is_some(),
             fps,
@@ -383,6 +397,11 @@ impl Live {
                 info: session.clone(),
                 pending,
                 capture_next: false,
+                recorder: None,
+                generation: {
+                    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                },
                 last_meta: Instant::now(),
                 outstanding,
             },
@@ -437,7 +456,7 @@ impl Live {
             emit(Event::Frame(Frame { width, height, stride, fourcc, fd, offset, size, bytes, ret: None }));
             return self.requeue(req);
         }
-        emit(Event::Frame(Frame { width, height, stride, fourcc, fd, offset, size, bytes: None, ret: Some((req, tx.clone())) }));
+        emit(Event::Frame(Frame { width, height, stride, fourcc, fd, offset, size, bytes: None, ret: Some((req, tx.clone(), self.generation)) }));
     }
 
     /// Everything a completed request's buffers are needed for, read while
@@ -459,6 +478,9 @@ impl Live {
         let data = buf.data();
         let view = data.first()?;
         let bytes = copy.then(|| view.to_vec());
+        if let Some(r) = &self.recorder {
+            r.push(view, stride);
+        }
 
         let still = std::mem::take(&mut self.capture_next).then(|| {
             let raw = self.raw.and_then(|s| {
@@ -511,7 +533,7 @@ impl Live {
         while self.outstanding > 0 {
             let left = deadline.saturating_duration_since(Instant::now());
             match rx.recv_timeout(left) {
-                Ok(Internal::Done(req)) | Ok(Internal::Returned(req)) => {
+                Ok(Internal::Done(req)) | Ok(Internal::Returned(req, _)) => {
                     self.outstanding -= 1;
                     drop(req);
                 }

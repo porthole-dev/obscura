@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use gettextrs::gettext;
@@ -12,6 +13,7 @@ use relm4::{Component, ComponentParts, ComponentSender};
 use crate::camera::{Backend, CameraInfo, Cmd, Event, Facing, LibcameraBackend, Metadata, Mode, Session, Still};
 use crate::controls::{self, Panel};
 use crate::portal::{self, Access};
+use crate::video::Recorder;
 use crate::viewfinder::{self, Viewfinder};
 use crate::APP_ID;
 
@@ -27,6 +29,10 @@ pub struct App {
     last_capture: Option<PathBuf>,
     settings: Option<gio::Settings>,
     saving: bool,
+    video: bool,
+    recorder: Option<Arc<Recorder>>,
+    record_started: Option<Instant>,
+    frame_duration: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -39,6 +45,10 @@ pub enum Msg {
     Retry,
     ToggleSidebar,
     Saved(Result<(PathBuf, Vec<u8>, u32, u32, i32), String>),
+    SetVideo(bool),
+    RecordingStarted(Result<Arc<Recorder>, String>),
+    RecordingDone(Result<PathBuf, String>),
+    Tick,
 }
 
 #[derive(Debug)]
@@ -62,6 +72,8 @@ pub struct Widgets {
     raw_row: adw::SwitchRow,
     switch: gtk::Button,
     capture: gtk::Button,
+    modes: adw::ToggleGroup,
+    record_time: gtk::Label,
     thumbnail: Viewfinder,
     gallery: gtk::Button,
 }
@@ -227,17 +239,39 @@ impl Component for App {
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        let bar = gtk::CenterBox::builder()
-            .valign(gtk::Align::End)
-            .css_classes(["capture-bar"])
+        let buttons = gtk::CenterBox::builder()
             .start_widget(&gallery)
             .center_widget(&capture)
             .end_widget(&switch)
+            .build();
+        let modes = adw::ToggleGroup::builder().halign(gtk::Align::Center).css_classes(["round"]).build();
+        modes.add(adw::Toggle::builder().name("photo").icon_name("camera-photo-symbolic").tooltip(gettext("Photo")).build());
+        modes.add(adw::Toggle::builder().name("video").icon_name("camera-video-symbolic").tooltip(gettext("Video")).build());
+        modes.set_active_name(Some("photo"));
+        let bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .valign(gtk::Align::End)
+            .css_classes(["capture-bar"])
+            .build();
+        bar.append(&modes);
+        bar.append(&buttons);
+        let record_time = gtk::Label::builder()
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Start)
+            .margin_top(48)
+            .css_classes(["recording-time", "numeric"])
+            .visible(false)
             .build();
 
         let overlay = gtk::Overlay::builder().child(&viewfinder).build();
         overlay.add_overlay(&info);
         overlay.add_overlay(&bar);
+        overlay.add_overlay(&record_time);
+        {
+            let s = sender.clone();
+            modes.connect_active_name_notify(move |g| s.input(Msg::SetVideo(g.active_name().as_deref() == Some("video"))));
+        }
 
         // Status page (permission, no camera, errors)
         let retry = gtk::Button::builder()
@@ -366,6 +400,18 @@ impl Component for App {
             let s = sender.clone();
             mode_row.connect_selected_notify(move |r| s.input(Msg::SelectMode(r.selected())))
         };
+        let mode_action = gio::SimpleAction::new_stateful("mode", Some(glib::VariantTy::STRING), &"photo".to_variant());
+        {
+            let modes = modes.clone();
+            mode_action.connect_activate(move |a, v| {
+                if let Some(name) = v.and_then(|v| v.get::<String>()) {
+                    a.set_state(&name.to_variant());
+                    modes.set_active_name(Some(&name));
+                }
+            });
+        }
+        app.add_action(&mode_action);
+
         // Everything the capture bar does is also an action: keyboard
         // accelerators, and scriptable over D-Bus (org.gtk.Actions).
         for (name, accels, msg) in [
@@ -395,6 +441,10 @@ impl Component for App {
             last_capture: None,
             settings,
             saving: false,
+            video: false,
+            recorder: None,
+            record_started: None,
+            frame_duration: None,
         };
         let widgets = Widgets {
             window,
@@ -412,6 +462,8 @@ impl Component for App {
             raw_row,
             switch,
             capture,
+            modes,
+            record_time,
             thumbnail,
             gallery,
         };
@@ -519,6 +571,7 @@ impl Component for App {
                 }
             }
             Msg::Camera(Event::Metadata(meta)) => {
+                self.frame_duration = meta.get("FrameDuration");
                 if let Some(p) = &self.panel {
                     p.show_metadata(&meta);
                 }
@@ -562,6 +615,110 @@ impl Component for App {
                     let camera = s.camera;
                     self.session = None;
                     self.open(camera, Some(mode));
+                }
+            }
+            Msg::Capture if self.video => {
+                let Some(session) = &self.session else { return };
+                if let Some(recorder) = self.recorder.take() {
+                    w.capture.set_sensitive(false);
+                    if let Some(b) = self.backend() {
+                        b.send(Cmd::Record(None));
+                    }
+                    let input = sender.input_sender().clone();
+                    std::thread::spawn(move || {
+                        let _ = input.send(Msg::RecordingDone(recorder.stop().map_err(|e| e.to_string())));
+                    });
+                } else if self.record_started.is_none() {
+                    w.capture.set_sensitive(false);
+                    self.record_started = Some(Instant::now());
+                    let (view, fourcc, rotation) = (session.view, session.fourcc, session.info.rotation);
+                    let fps = self.frame_duration.map(|us| 1e6 / us).or(session.fps.map(|f| f.1)).unwrap_or(30.0);
+                    let input = sender.input_sender().clone();
+                    std::thread::spawn(move || {
+                        let r = Recorder::start(view.width, view.height, fourcc, fps, rotation).map(Arc::new).map_err(|e| e.to_string());
+                        let _ = input.send(Msg::RecordingStarted(r));
+                    });
+                }
+            }
+            Msg::RecordingStarted(result) => {
+                w.capture.set_sensitive(true);
+                match result {
+                    Ok(recorder) => {
+                        if let Some(b) = self.backend() {
+                            b.send(Cmd::Record(Some(recorder.clone())));
+                        }
+                        self.recorder = Some(recorder);
+                        self.record_started = Some(Instant::now());
+                        w.capture.add_css_class("recording");
+                        w.capture.set_icon_name("media-playback-stop-symbolic");
+                        w.capture.set_tooltip_text(Some(&gettext("Stop Recording")));
+                        w.modes.set_sensitive(false);
+                        w.switch.set_sensitive(false);
+                        w.mode_row.set_sensitive(false);
+                        w.record_time.set_label("0:00");
+                        w.record_time.set_visible(true);
+                        let s = sender.clone();
+                        glib::timeout_add_seconds_local(1, move || {
+                            s.input(Msg::Tick);
+                            glib::ControlFlow::Continue
+                        });
+                    }
+                    Err(e) => {
+                        log::warn!("recording did not start: {e}");
+                        self.record_started = None;
+                        w.toasts.add_toast(adw::Toast::new(&format!("{}: {e}", gettext("Could not record"))));
+                    }
+                }
+            }
+            Msg::Tick => {
+                if let (Some(t), Some(_)) = (self.record_started, &self.recorder) {
+                    let secs = t.elapsed().as_secs();
+                    w.record_time.set_label(&format!("{}:{:02}", secs / 60, secs % 60));
+                }
+            }
+            Msg::RecordingDone(result) => {
+                self.record_started = None;
+                w.capture.set_sensitive(true);
+                w.capture.remove_css_class("recording");
+                w.capture.set_icon_name("media-record-symbolic");
+                w.capture.set_tooltip_text(Some(&gettext("Start Recording")));
+                w.modes.set_sensitive(true);
+                w.switch.set_sensitive(true);
+                w.mode_row.set_sensitive(true);
+                w.record_time.set_visible(false);
+                match result {
+                    Ok(path) => {
+                        self.last_capture = Some(path);
+                        w.gallery.set_sensitive(true);
+                        w.toasts.add_toast(adw::Toast::new(&gettext("Video saved")));
+                    }
+                    Err(e) => {
+                        log::warn!("recording failed: {e}");
+                        w.toasts.add_toast(adw::Toast::new(&format!("{}: {e}", gettext("Could not save video"))));
+                    }
+                }
+            }
+            Msg::SetVideo(video) => {
+                self.video = video;
+                w.capture.set_icon_name(if video { "media-record-symbolic" } else { "camera-photo-symbolic" });
+                w.capture.set_tooltip_text(Some(&if video { gettext("Start Recording") } else { gettext("Take Photo") }));
+                if video { w.capture.add_css_class("video") } else { w.capture.remove_css_class("video") }
+                // Video wants a 16:9 mode, photos the full sensor.
+                if let Some(s) = &self.session {
+                    let ratio = |m: &Mode| m.width as f64 / m.height as f64;
+                    let wide = |m: &Mode| (ratio(m) - 16.0 / 9.0).abs() < 0.05;
+                    let target = if video {
+                        (!wide(&s.mode)).then(|| s.modes.iter().copied().filter(|m| wide(m) && m.width <= 4096).max_by_key(|m| m.width))
+                    } else {
+                        wide(&s.mode).then(|| s.modes.first().copied())
+                    };
+                    if let Some(Some(mode)) = target {
+                        let camera = s.camera;
+                        w.capture.set_sensitive(false);
+                        w.viewfinder.set_texture(None);
+                        self.session = None;
+                        self.open(camera, Some(mode));
+                    }
                 }
             }
             Msg::Capture => {

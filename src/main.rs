@@ -6,6 +6,7 @@ mod controls;
 mod dng;
 mod photo;
 mod portal;
+mod video;
 mod viewfinder;
 
 pub const APP_ID: &str = "io.github.jertlok.Obscura";
@@ -17,6 +18,9 @@ const CSS: &str = "
 .capture-bar { padding: 18px 24px; background: linear-gradient(to top, alpha(black, 0.55), transparent); }
 .shutter { min-width: 72px; min-height: 72px; -gtk-icon-size: 28px; background-color: white; color: black; border: 4px solid alpha(white, 0.5); background-clip: padding-box; }
 .shutter:disabled { background-color: alpha(white, 0.5); }
+.shutter.video { color: @error_color; }
+.shutter.recording { background-color: @error_bg_color; color: white; }
+.recording-time { background-color: @error_bg_color; color: white; border-radius: 9999px; padding: 2px 10px; }
 .bottom-button { min-width: 52px; min-height: 52px; padding: 0; }
 .gallery viewfinder { border-radius: 9999px; min-width: 48px; min-height: 48px; }
 .capture-info { background-color: alpha(black, 0.55); color: white; border-radius: 9999px; padding: 4px 12px; }
@@ -31,6 +35,8 @@ fn main() {
     let _ = gettextrs::bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
     let _ = gettextrs::textdomain(GETTEXT_PACKAGE);
     gst::init().expect("GStreamer");
+    // Probe encoders now, so the first recording does not wait on it.
+    std::thread::spawn(|| video::encoder());
 
     let app = relm4::RelmApp::new(APP_ID);
     relm4::set_global_css(CSS);
