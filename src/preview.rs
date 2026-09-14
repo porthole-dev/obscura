@@ -215,6 +215,7 @@ pub fn backend(emit: impl Fn(Event) + Send + 'static) -> Option<LibcameraBackend
                         raw: true,
                         fps: Some((5.0, 120.0)),
                         af_windows: false,
+                        metadata: true,
                     }));
                     open = Some((camera, mode, view, info));
                 }

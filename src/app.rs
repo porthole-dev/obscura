@@ -595,10 +595,15 @@ impl Component for App {
                 let _ = input.send(Msg::Camera(ev));
             };
             #[cfg(feature = "preview")]
-            let backend = crate::preview::backend(emit.clone()).unwrap_or_else(|| LibcameraBackend::spawn(emit));
+            let fake = crate::preview::backend(emit.clone());
             #[cfg(not(feature = "preview"))]
-            let backend = LibcameraBackend::spawn(emit);
-            Rc::new(backend)
+            let fake: Option<LibcameraBackend> = None;
+            match fake {
+                Some(fake) => Some(Rc::new(fake)),
+                // Through PipeWire the cameras wait for the portal's remote.
+                None if crate::pipewire::wanted() => None,
+                None => Some(Rc::new(LibcameraBackend::spawn(emit))),
+            }
         };
         #[cfg(feature = "preview")]
         crate::preview::install(&window, &sender);
@@ -1123,14 +1128,14 @@ impl Component for App {
         }
 
         let video = settings.as_ref().is_some_and(|s| s.boolean("video"));
-        if let Some(s) = &settings {
+        if let (Some(s), Some(backend)) = (&settings, &backend) {
             backend.send(Cmd::FullResolution(s.boolean("full-resolution")));
             let b = backend.clone();
             s.connect_changed(Some("full-resolution"), move |s, k| b.send(Cmd::FullResolution(s.boolean(k))));
         }
         let timer = settings.as_ref().map(|s| s.int("timer").max(0) as u32).unwrap_or(0);
         let model = App {
-            backend: Some(backend),
+            backend: backend.clone(),
             cameras: Vec::new(),
             camera: 0,
             session: None,
@@ -1239,7 +1244,7 @@ impl Component for App {
         ComponentParts { model, widgets }
     }
 
-    fn update_cmd_with_view(&mut self, w: &mut Self::Widgets, msg: CmdOut, _sender: ComponentSender<Self>, _: &Self::Root) {
+    fn update_cmd_with_view(&mut self, w: &mut Self::Widgets, msg: CmdOut, sender: ComponentSender<Self>, _: &Self::Root) {
         match msg {
             CmdOut::Access(Access::Denied) => {
                 perf!("portal", "denied");
@@ -1254,8 +1259,19 @@ impl Component for App {
             }
             CmdOut::Access(access) => {
                 perf!("portal", "{access:?}");
-                if let Access::Unavailable(why) = &access {
-                    log::warn!("camera portal unavailable ({why}); using the cameras directly");
+                let remote = match access {
+                    Access::Granted(remote) => remote,
+                    Access::Unavailable(why) => {
+                        log::warn!("camera portal unavailable ({why}); using the cameras directly");
+                        None
+                    }
+                    Access::Denied => None,
+                };
+                if self.backend.is_none() {
+                    let input = sender.input_sender().clone();
+                    self.backend = Some(Rc::new(crate::pipewire::spawn(remote, move |ev| {
+                        let _ = input.send(Msg::Camera(ev));
+                    })));
                 }
                 self.granted = true;
                 if !self.cameras.is_empty() {
@@ -1814,6 +1830,10 @@ impl App {
         let Some(panel) = self.panel.clone() else { return };
         if w.viewfinder.to_sensor(x, y).is_none() {
             perf!("lock-refused", "outside the picture at {x:.0},{y:.0}");
+            return;
+        }
+        if self.session.as_ref().is_some_and(|s| !s.metadata) {
+            perf!("lock-refused", "no metadata");
             return;
         }
         let meta = &self.last_meta;

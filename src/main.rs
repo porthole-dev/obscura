@@ -8,6 +8,7 @@ mod controls;
 mod device;
 mod dng;
 mod photo;
+mod pipewire;
 mod portal;
 #[cfg(feature = "preview")]
 mod preview;

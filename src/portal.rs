@@ -8,7 +8,8 @@ use crate::APP_ID;
 
 #[derive(Debug)]
 pub enum Access {
-    Granted,
+    /// With the PipeWire remote when the cameras come through PipeWire.
+    Granted(Option<std::os::fd::OwnedFd>),
     Denied,
     /// No portal, or no camera interface on it. Outside a sandbox the app can
     /// still reach the cameras itself, so this is not fatal there.
@@ -34,7 +35,11 @@ pub async fn request_access() -> Access {
         Err(e) => return Access::Unavailable(e.to_string()),
     };
     match camera.request_access(Default::default()).await.and_then(|r| r.response()) {
-        Ok(()) => Access::Granted,
+        Ok(()) if crate::pipewire::wanted() => match camera.open_pipe_wire_remote(Default::default()).await {
+            Ok(fd) => Access::Granted(Some(fd)),
+            Err(e) => Access::Unavailable(format!("no PipeWire remote: {e}")),
+        },
+        Ok(()) => Access::Granted(None),
         Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => Access::Denied,
         Err(ashpd::Error::Response(_)) => Access::Denied,
         Err(e) => Access::Unavailable(e.to_string()),

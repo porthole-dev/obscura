@@ -77,7 +77,10 @@ fn probe(e: &Encoder) -> bool {
 /// The first audio source that can actually open a device; a session with no
 /// sound server records silent video rather than failing.
 fn audio_source() -> Option<&'static str> {
-    ["pulsesrc", "pipewiresrc"].into_iter().find(|name| {
+    // ponytail: PulseAudio's protocol only. pipewiresrc without a target
+    // can pick a camera node and fail the whole recording; PipeWire serves
+    // pulsesrc through pipewire-pulse, and Flatpak grants that socket.
+    ["pulsesrc"].into_iter().find(|name| {
         let Ok(e) = gst::ElementFactory::make(name).build() else { return false };
         let ok = e.set_state(gst::State::Ready).is_ok();
         let _ = e.set_state(gst::State::Null);

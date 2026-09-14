@@ -22,7 +22,14 @@ while [ $# -gt 0 ]; do
 	shift
 done
 [ $build = 0 ] || "$P" build >/dev/null || { echo "build failed" >&2; exit 100; }
-if [ $camera = virtual ]; then main_fake=""; else main_fake=taimen; fi
+case $camera in
+virtual) main_fake="" ;;
+pipewire)
+	main_fake=""
+	export OBSCURA_BACKEND=pipewire PREVIEW_PIPEWIRE=1
+	;;
+*) main_fake=taimen ;;
+esac
 rm -rf "$out" && mkdir -p "$out"
 
 count() { grep -c "obscura-perf [0-9.]* $1" "$log" 2>/dev/null || true; }
@@ -87,11 +94,18 @@ if [ $camera = fake ]; then
 fi
 "$P" act toggle-controls; expect "controls close" "controls open=false"
 
-"$P" act capture; expect "full-res photo: reconfigure" "still-reconfigure" && expect "full-res photo: preview thumbnail" "thumbnail-preview" && expect "full-res photo: viewfinder back" "viewfinder-restored" && shot photo
+if [ $camera = pipewire ]; then
+	# One stream: every photo comes from it.
+	"$P" act capture; expect "photo: preview thumbnail" "thumbnail-preview" && expect "photo: JPEG written" "photo-jpeg-written" 1 30 && shot photo
+else
+	"$P" act capture; expect "full-res photo: reconfigure" "still-reconfigure" && expect "full-res photo: preview thumbnail" "thumbnail-preview" && expect "full-res photo: viewfinder back" "viewfinder-restored" && shot photo
+fi
 if [ $camera = virtual ]; then expect "full-res photo: JPEG written" "photo-jpeg-written" 1 30; fi
 "$P" act full-resolution
 "$P" act capture; expect "fast photo: still" "still-received" 2
-[ "$(count still-reconfigure)" -eq 1 ] && printf 'ok    %-34s\n' "fast photo: no reconfigure" || { printf 'FAIL  %-34s\n' "fast photo: no reconfigure"; failed=$((failed + 1)); }
+if [ $camera != pipewire ]; then
+	[ "$(count still-reconfigure)" -eq 1 ] && printf 'ok    %-34s\n' "fast photo: no reconfigure" || { printf 'FAIL  %-34s\n' "fast photo: no reconfigure"; failed=$((failed + 1)); }
+fi
 
 # press NAME X Y SECONDS EVENT: a pointer press, tried three times. Under
 # qemu an emulated app can miss one (a toast sliding in is enough); a real
@@ -123,7 +137,11 @@ fi
 presented=$(count frame-first-presented)
 "$P" act switch-camera; expect "switch camera" "frame-first-presented" $((presented + 1)) 20 && shot front
 "$P" act mode video; expect "video mode" "frame-first-presented" $((presented + 2)) 20 && shot video
-"$P" act frame-rate; expect "frame rate chip cycles" "frame-rate Some" && expect "frame rate reaches the camera" "control FrameDurationLimits" && shot frame-rate
+if [ $camera = pipewire ]; then
+	echo "skip  frame rate                         (PipeWire forwards no FrameDurationLimits)"
+else
+	"$P" act frame-rate; expect "frame rate chip cycles" "frame-rate Some" && expect "frame rate reaches the camera" "control FrameDurationLimits" && shot frame-rate
+fi
 expect "encoders probed" "encoder-probed" 1 20
 if grep -q "encoder-probed none" "$log"; then
 	echo "skip  recording                          (no working video encoder here)"

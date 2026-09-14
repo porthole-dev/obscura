@@ -65,6 +65,16 @@ front one). `run.sh` builds the image, mounts the repository at /src, passes
 with `OBSCURA_FAKE` empty (target/container/check/ has the logs and
 screenshots). Any other command can follow `run.sh` instead.
 
+`run.sh build-aux/preview/check.sh --camera pipewire` runs the same flows
+through the PipeWire backend (`src/pipewire.rs`, what a sandboxed build
+uses): a PipeWire daemon and WirePlumber start in the headless session, and
+PipeWire's libcamera plugin publishes the virtual cameras as nodes. The app
+connects to the PipeWire socket directly; the Camera portal leg
+(`AccessCamera`, `OpenPipeWireRemote`) is not exercised there, since
+xdg-desktop-portal needs a real session. Checks that need what PipeWire does
+not forward (frame rates, full-resolution reconfiguration, metadata) are
+skipped with a note.
+
 The virtual pipeline cannot model everything: it has no raw stream,
 controls or exposure metadata, and no autofocus or rotation, so the lock is
 refused (and checked to be) and the taimen fake still covers those.

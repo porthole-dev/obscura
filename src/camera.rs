@@ -103,6 +103,9 @@ pub struct Session {
     pub fps: Option<(f64, f64)>,
     /// Autofocus can be pointed at a spot (AfWindows).
     pub af_windows: bool,
+    /// Frames come with metadata (exposure, gains, focus state): without it
+    /// there are no automatic readouts and nothing for a lock to hold.
+    pub metadata: bool,
 }
 
 /// A viewfinder frame. The dmabuf stays valid, and the request stays out of
@@ -233,7 +236,7 @@ pub struct FrameSlot {
 }
 
 impl FrameSlot {
-    pub fn deliver(&self, frame: Frame, emit: &impl Fn(Event)) {
+    pub fn deliver<F: Fn(Event) + ?Sized>(&self, frame: Frame, emit: &F) {
         let stale = self.frame.lock().unwrap().replace(frame);
         match stale {
             None => emit(Event::FrameReady),
@@ -630,6 +633,7 @@ impl Live {
             raw: raw_stream.is_some() || (!want_raw && sensor_modes_are_raw(&cam)),
             fps,
             af_windows,
+            metadata: true,
         };
         let pending = ControlList::new();
         Ok((

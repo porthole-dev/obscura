@@ -78,6 +78,16 @@ start) # [WIDTH HEIGHT]; OBSCURA_FAKE=taimen|denied|nocamera|busy (default taime
 	mutter --headless --wayland --no-x11 --virtual-monitor "${width}x${height}" --wayland-display "$wl" >"$state/mutter.log" 2>&1 &
 	echo "MUTTER_PID=$!" >> "$state/env"
 	for _ in $(seq 100); do [ -S "${XDG_RUNTIME_DIR:-/tmp}/$wl" ] && break; sleep 0.1; done
+	if [ -n "${PREVIEW_PIPEWIRE:-}" ]; then
+		# A PipeWire daemon with WirePlumber, whose libcamera monitor turns the
+		# cameras into nodes.
+		pipewire >"$state/pipewire.log" 2>&1 &
+		echo "PIPEWIRE_PID=$!" >> "$state/env"
+		for _ in $(seq 50); do [ -S "${XDG_RUNTIME_DIR:-/tmp}/pipewire-0" ] && break; sleep 0.1; done
+		wireplumber >"$state/wireplumber.log" 2>&1 &
+		echo "WIREPLUMBER_PID=$!" >> "$state/env"
+		sleep 2
+	fi
 	env -u DISPLAY WAYLAND_DISPLAY="$wl" GDK_BACKEND=wayland GSK_RENDERER="${GSK_RENDERER:-cairo}" NO_AT_BRIDGE=1 \
 		GSETTINGS_SCHEMA_DIR="$state/schemas" GSETTINGS_BACKEND=keyfile XDG_CONFIG_HOME="$state/config" HOME="$state" \
 		OBSCURA_FAKE="${OBSCURA_FAKE-taimen}" OBSCURA_PERF=1 RUST_LOG="${RUST_LOG:-warn}" "${lang_env[@]}" \
@@ -93,7 +103,7 @@ start) # [WIDTH HEIGHT]; OBSCURA_FAKE=taimen|denied|nocamera|busy (default taime
 	;;
 stop)
 	load || exit 0
-	kill "${INPUT_PID:-}" "${APP_PID:-}" "${MUTTER_PID:-}" "${BUS_PID:-}" 2>/dev/null || true
+	kill "${INPUT_PID:-}" "${APP_PID:-}" "${WIREPLUMBER_PID:-}" "${PIPEWIRE_PID:-}" "${MUTTER_PID:-}" "${BUS_PID:-}" 2>/dev/null || true
 	rm -f "$state/env"
 	;;
 act) load; act "$@" ;;

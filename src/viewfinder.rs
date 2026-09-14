@@ -239,8 +239,20 @@ mod tests {
 /// import is not possible and the caller should switch to copied frames.
 pub fn texture(frame: Frame) -> Result<gdk::Texture, ()> {
     if let Some(bytes) = frame.bytes.as_ref() {
-        let format = memory_format(frame.fourcc).ok_or(())?;
         let bytes = glib::Bytes::from(bytes.as_slice());
+        if frame.fourcc == u32::from_le_bytes(*b"NV12") {
+            let stride = frame.stride as usize;
+            return Ok(gdk::MemoryTextureBuilder::new()
+                .set_bytes(Some(&bytes))
+                .set_width(frame.width as i32)
+                .set_height(frame.height as i32)
+                .set_format(gdk::MemoryFormat::G8B8r8420)
+                .set_stride_for_plane(0, stride)
+                .set_stride_for_plane(1, stride)
+                .set_offset(1, stride * frame.height as usize)
+                .build());
+        }
+        let format = memory_format(frame.fourcc).ok_or(())?;
         return Ok(gdk::MemoryTexture::new(frame.width as i32, frame.height as i32, format, &bytes, frame.stride as usize).upcast());
     }
 
