@@ -163,6 +163,8 @@ pub struct Still {
     pub raw: Option<RawImage>,
     pub metadata: Metadata,
     pub info: CameraInfo,
+    /// Digital zoom to crop to when saving.
+    pub zoom: f64,
 }
 
 #[derive(Debug)]
@@ -610,6 +612,7 @@ impl Live {
                 raw,
                 metadata: read_metadata(req.metadata()),
                 info: self.info.info.clone(),
+                zoom: 1.0,
             });
             perf!("still-copied", "ms={:.1} bytes={}", copy_started.elapsed().as_secs_f64() * 1e3, still.rgba.len());
             still

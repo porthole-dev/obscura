@@ -51,6 +51,13 @@ pub struct App {
     granted: bool,
     /// The photo path has been warmed up in the background.
     warmed: bool,
+    /// Device turn from the accelerometer, and the display turn it implies.
+    device: i32,
+    natural_landscape: Option<bool>,
+    display_rotation: i32,
+    zoom: f64,
+    zoom_start: f64,
+    orientation: crate::device::Orientation,
 }
 
 /// Viewfinder counters for OBSCURA_PERF, shared with the frame clock.
@@ -124,6 +131,12 @@ pub enum Msg {
     HideFocus(u32),
     ContinuousFocus,
     Suspended(bool),
+    /// Degrees the device is turned clockwise from its natural orientation.
+    Orientation(i32),
+    ZoomBegin,
+    Pinch(f64),
+    CycleZoom,
+    Preferences,
 }
 
 #[derive(Debug)]
@@ -153,6 +166,7 @@ pub struct Chips {
     wb: gtk::Button,
     focus: gtk::Button,
     fps: gtk::Button,
+    zoom: gtk::Button,
 }
 
 pub struct Widgets {
@@ -227,8 +241,10 @@ fn icon_button(icon: &str, tooltip: &str, classes: &[&str]) -> gtk::Button {
     b
 }
 
-fn chip(tooltip: &str, sender: &ComponentSender<App>, rows: &'static [&'static str]) -> gtk::Button {
-    let text = gtk::Label::builder().width_chars(3).css_classes(["numeric"]).build();
+/// A value over the viewfinder. `chars` fits its widest value, so a changing
+/// number never moves its neighbours.
+fn chip(tooltip: &str, sender: &ComponentSender<App>, rows: &'static [&'static str], chars: i32) -> gtk::Button {
+    let text = gtk::Label::builder().width_chars(chars).max_width_chars(chars).css_classes(["numeric"]).build();
     let b = gtk::Button::builder().child(&text).tooltip_text(tooltip).css_classes(["chip"]).visible(false).build();
     label(&b, tooltip);
     let s = sender.clone();
@@ -333,18 +349,24 @@ impl App {
             set_chip(&c.iso, &format!("ISO {:.0}", g * meta.get("DigitalGain").unwrap_or(1.0) * 100.0), manual.gain);
         }
         if let Some(us) = meta.get("ExposureTime") {
-            set_chip(&c.shutter, &format_value("ExposureTime", us), manual.exposure);
+            let t = format_value("ExposureTime", us);
+            let t = match t.strip_suffix(" s") {
+                Some(v) if v.contains('/') => v.to_string(),
+                Some(v) => format!("{v}″"),
+                None => t,
+            };
+            set_chip(&c.shutter, &t, manual.exposure);
         }
         if let Some(ev) = panel.value("ExposureValue") {
-            let text = if ev == 0.0 { "±0 EV".to_string() } else { format!("{ev:+.1} EV") };
+            let text = if ev == 0.0 { "±0".to_string() } else { format!("{ev:+.1}") };
             set_chip(&c.ev, &text, ev != 0.0);
         }
         match meta.get("ColourTemperature") {
-            Some(k) => set_chip(&c.wb, &format!("{k:.0} K"), manual.white_balance),
+            Some(k) => set_chip(&c.wb, &format!("{k:.0}K"), manual.white_balance),
             None => set_chip(&c.wb, &gettext("AWB"), manual.white_balance),
         }
         match (manual.focus, meta.get("LensPosition")) {
-            (true, Some(d)) => set_chip(&c.focus, &format!("MF {}", format_value("LensPosition", d)), true),
+            (true, Some(d)) => set_chip(&c.focus, &format!("MF {}", format_value("LensPosition", d).replace(' ', "")), true),
             // Single-shot after a tap, continuous otherwise.
             _ if panel.is("AfMode", "Auto") => set_chip(&c.focus, &gettext("AF-S"), true),
             _ => set_chip(&c.focus, &gettext("AF"), false),
@@ -358,6 +380,7 @@ impl App {
         if self.video {
             if let Some(recorder) = self.recorder.take() {
                 perf!("record-stop-press");
+                self.feedback();
                 w.capture.set_sensitive(false);
                 if let Some(b) = self.backend() {
                     b.send(Cmd::Record(None));
@@ -370,7 +393,9 @@ impl App {
                 perf!("record-press");
                 w.capture.set_sensitive(false);
                 self.record_started = Some(Instant::now());
-                let (view, fourcc, rotation) = (session.view, session.fourcc, session.info.rotation);
+                let rotation = crate::device::upright(session.info.rotation, session.info.facing == Facing::Front, self.device);
+                let (view, fourcc) = (session.view, session.fourcc);
+                self.feedback();
                 let fps = self.frame_duration.map(|us| 1e6 / us).or(session.fps.map(|f| f.1)).unwrap_or(30.0);
                 let input = sender.input_sender().clone();
                 std::thread::spawn(move || {
@@ -391,6 +416,7 @@ impl App {
             glib::timeout_add_local_once(Duration::from_millis(90), move || vf.remove_css_class("flash"));
             if let Some(b) = self.backend() {
                 b.send(Cmd::Capture);
+                self.feedback();
             }
         }
     }
@@ -512,6 +538,7 @@ impl Component for App {
         section.append(Some(&gettext("Show Capture _Info")), Some("app.show-info"));
         menu.append_section(None, &section);
         let section = gio::Menu::new();
+        section.append(Some(&gettext("_Preferences")), Some("app.preferences"));
         section.append(Some(&gettext("_Keyboard Shortcuts")), Some("app.shortcuts"));
         section.append(Some(&gettext("_About Obscura")), Some("app.about"));
         menu.append_section(None, &section);
@@ -549,6 +576,12 @@ impl Component for App {
                 }
             });
             viewfinder.add_controller(swipe);
+            let pinch = gtk::GestureZoom::new();
+            let s = sender.clone();
+            pinch.connect_begin(move |_, _| s.input(Msg::ZoomBegin));
+            let s = sender.clone();
+            pinch.connect_scale_changed(move |_, scale| s.input(Msg::Pinch(scale)));
+            viewfinder.add_controller(pinch);
             let s = sender.clone();
             let hold = gtk::GestureLongPress::new();
             hold.connect_pressed(move |_, _, _| s.input(Msg::ContinuousFocus));
@@ -579,15 +612,23 @@ impl Component for App {
         record_pill.append(&record_time);
 
         let chips = Chips {
-            iso: chip(&gettext("ISO"), &sender, &["AnalogueGainMode", "AnalogueGain", "AeEnable"]),
-            shutter: chip(&gettext("Shutter Speed"), &sender, &["ExposureTimeMode", "ExposureTime", "AeEnable"]),
-            ev: chip(&gettext("Exposure Compensation"), &sender, &["ExposureValue"]),
-            wb: chip(&gettext("White Balance"), &sender, &["AwbMode", "AwbEnable", "ColourTemperature"]),
-            focus: chip(&gettext("Focus"), &sender, &["AfMode", "LensPosition"]),
-            fps: chip(&gettext("Frame Rate"), &sender, &["FrameDurationLimits"]),
+            zoom: {
+                let text = gtk::Label::builder().label("1×").width_chars(4).max_width_chars(4).css_classes(["numeric"]).build();
+                let b = gtk::Button::builder().child(&text).tooltip_text(gettext("Zoom")).css_classes(["chip", "zoom"]).build();
+                label(&b, &gettext("Zoom"));
+                let s = sender.clone();
+                b.connect_clicked(move |_| s.input(Msg::CycleZoom));
+                b
+            },
+            iso: chip(&gettext("ISO"), &sender, &["AnalogueGainMode", "AnalogueGain", "AeEnable"], 8),
+            shutter: chip(&gettext("Shutter Speed"), &sender, &["ExposureTimeMode", "ExposureTime", "AeEnable"], 6),
+            ev: chip(&gettext("Exposure Compensation"), &sender, &["ExposureValue"], 4),
+            wb: chip(&gettext("White Balance"), &sender, &["AwbMode", "AwbEnable", "ColourTemperature"], 5),
+            focus: chip(&gettext("Focus"), &sender, &["AfMode", "LensPosition"], 7),
+            fps: chip(&gettext("Frame Rate"), &sender, &["FrameDurationLimits"], 6),
         };
-        let strip = gtk::Box::builder().spacing(6).halign(gtk::Align::Center).build();
-        for c in [&chips.iso, &chips.shutter, &chips.ev, &chips.wb, &chips.focus, &chips.fps] {
+        let strip = gtk::Box::builder().spacing(4).halign(gtk::Align::Center).build();
+        for c in [&chips.zoom, &chips.iso, &chips.shutter, &chips.ev, &chips.wb, &chips.focus, &chips.fps] {
             strip.append(c);
         }
         let chip_scroller = gtk::ScrolledWindow::builder()
@@ -612,6 +653,7 @@ impl Component for App {
         label(&capture, &gettext("Take Photo"));
         let switch = icon_button("camera-switch-symbolic", &gettext("Switch Camera"), &["round-button", "switch-camera"]);
         switch.set_visible(false);
+        switch.set_halign(gtk::Align::Center);
         let thumbnail = Viewfinder::default();
         thumbnail.set_size_request(52, 52);
         thumbnail.set_cover(true);
@@ -626,6 +668,7 @@ impl Component for App {
             .tooltip_text(gettext("Open Last Capture"))
             .css_classes(["round-button", "gallery"])
             .valign(gtk::Align::Center)
+            .halign(gtk::Align::Center)
             .sensitive(false)
             .build();
         label(&gallery, &gettext("Open Last Capture"));
@@ -640,6 +683,23 @@ impl Component for App {
         bar_content.append(&buttons);
         // Full-width shade, thumb-width controls.
         let bar = adw::Clamp::builder().maximum_size(460).tightening_threshold(460).child(&bar_content).valign(gtk::Align::End).css_classes(["capture-bar"]).build();
+        let side_bar = |bp: &adw::Breakpoint| {
+            // Landscape phones: the controls stand in a column on the right.
+            bp.add_setter(&bar, "orientation", Some(&gtk::Orientation::Vertical.to_value()));
+            bp.add_setter(&bar, "valign", Some(&gtk::Align::Fill.to_value()));
+            bp.add_setter(&bar, "halign", Some(&gtk::Align::End.to_value()));
+            bp.add_setter(&bar, "css-classes", Some(&vec!["capture-bar-side".to_string()].to_value()));
+            bp.add_setter(&bar_content, "orientation", Some(&gtk::Orientation::Horizontal.to_value()));
+            bp.add_setter(&strip, "orientation", Some(&gtk::Orientation::Vertical.to_value()));
+            bp.add_setter(&chip_scroller, "hscrollbar-policy", Some(&gtk::PolicyType::Never.to_value()));
+            bp.add_setter(&chip_scroller, "vscrollbar-policy", Some(&gtk::PolicyType::External.to_value()));
+            bp.add_setter(&chip_scroller, "valign", Some(&gtk::Align::Center.to_value()));
+            bp.add_setter(&chip_scroller, "propagate-natural-height", Some(&true.to_value()));
+            bp.add_setter(&chip_scroller, "propagate-natural-width", Some(&true.to_value()));
+            bp.add_setter(&modes, "orientation", Some(&gtk::Orientation::Vertical.to_value()));
+            bp.add_setter(&modes, "valign", Some(&gtk::Align::Center.to_value()));
+            bp.add_setter(&buttons, "orientation", Some(&gtk::Orientation::Vertical.to_value()));
+        };
 
         // Offloaded, the viewfinder's dmabufs can go to the compositor as a
         // subsurface (even a display plane) instead of through the GPU.
@@ -732,16 +792,30 @@ impl Component for App {
         toasts.set_child(Some(&layouts));
         window.set_content(Some(&toasts));
 
-        let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MaxWidth,
-            720.0,
-            adw::LengthUnit::Sp,
-        ));
-        breakpoint.add_setter(&layouts, "layout-name", Some(&"narrow".to_value()));
-        // In the sheet the controls take part of the screen, so the picture
-        // being adjusted stays in sight.
-        breakpoint.add_setter(&controls_scroller, "max-content-height", Some(&340.to_value()));
-        window.add_breakpoint(breakpoint);
+        let narrow = || adw::BreakpointCondition::new_length(adw::BreakpointConditionLengthType::MaxWidth, 720.0, adw::LengthUnit::Sp);
+        let landscape = || {
+            adw::BreakpointCondition::new_and(
+                adw::BreakpointCondition::new_length(adw::BreakpointConditionLengthType::MaxHeight, 520.0, adw::LengthUnit::Sp),
+                adw::BreakpointCondition::new_ratio(adw::BreakpointConditionRatioType::MinAspectRatio, 4, 3),
+            )
+        };
+        let sheet_setters = |bp: &adw::Breakpoint| {
+            bp.add_setter(&layouts, "layout-name", Some(&"narrow".to_value()));
+            // In the sheet the controls take part of the screen, so the
+            // picture being adjusted stays in sight.
+            bp.add_setter(&controls_scroller, "max-content-height", Some(&340.to_value()));
+        };
+        // When several match, the last one added applies.
+        let bp = adw::Breakpoint::new(narrow());
+        sheet_setters(&bp);
+        window.add_breakpoint(bp);
+        let bp = adw::Breakpoint::new(landscape());
+        side_bar(&bp);
+        window.add_breakpoint(bp);
+        let bp = adw::Breakpoint::new(adw::BreakpointCondition::new_and(narrow(), landscape()));
+        sheet_setters(&bp);
+        side_bar(&bp);
+        window.add_breakpoint(bp);
 
         // Actions
         let about = gio::SimpleAction::new("about", None);
@@ -776,6 +850,8 @@ impl Component for App {
                     (gettext("Self-Timer"), "app.timer"),
                     (gettext("Show Capture Info"), "app.show-info"),
                     (gettext("Open Last Capture"), "app.open-last"),
+                    (gettext("Zoom"), "app.zoom"),
+                    (gettext("Preferences"), "app.preferences"),
                     (gettext("Keyboard Shortcuts"), "app.shortcuts"),
                     (gettext("Quit"), "app.quit"),
                 ] {
@@ -820,6 +896,8 @@ impl Component for App {
             ("switch-camera", &["<Ctrl>Tab"][..], || Msg::SwitchCamera),
             ("open-last", &["<Ctrl>o"][..], || Msg::OpenLast),
             ("timer", &["<Ctrl>t"][..], || Msg::CycleTimer),
+            ("zoom", &["<Ctrl>plus"][..], || Msg::CycleZoom),
+            ("preferences", &["<Ctrl>comma"][..], || Msg::Preferences),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let s = sender.clone();
@@ -913,6 +991,15 @@ impl Component for App {
             perf: crate::perf::on().then(Default::default),
             granted: false,
             warmed: false,
+            device: 0,
+            natural_landscape: None,
+            display_rotation: 0,
+            zoom: 1.0,
+            zoom_start: 1.0,
+            orientation: crate::device::Orientation::watch({
+                let s = sender.clone();
+                move |d| s.input(Msg::Orientation(d))
+            }),
         };
         if let Some(stats) = &model.perf {
             window.connect_map(|_| perf!("window-mapped"));
@@ -1065,7 +1152,8 @@ impl Component for App {
                 perf!("session-opened", "camera={} mode={}x{}", session.camera, session.mode.width, session.mode.height);
                 w.controls_title.set_title(&session.info.name());
                 w.controls_title.set_subtitle(if session.info.facing == Facing::External { "" } else { &session.info.model });
-                w.viewfinder.set_rotation(session.info.rotation, session.info.facing == Facing::Front);
+                let front = session.info.facing == Facing::Front;
+                w.viewfinder.set_rotation(crate::device::upright(session.info.rotation, front, self.display_rotation), front);
                 w.stack.set_visible_child_name("camera");
                 w.quick.set_visible(true);
                 w.capture.set_sensitive(!self.saving);
@@ -1160,6 +1248,9 @@ impl Component for App {
                     p.show_metadata(&meta);
                 }
                 self.update_chips(&w.chips, &meta);
+                // ponytail: the display turn is polled at the metadata rate
+                // rather than wired to every monitor and window signal.
+                self.apply_orientation(w);
                 let settled = match meta.get("AfState").map(|s| s as i32) {
                     Some(2) => Some("focused"),
                     Some(3) => Some("failed"),
@@ -1177,6 +1268,10 @@ impl Component for App {
                 if let Some(t) = self.perf.as_ref().and_then(|p| p.borrow().shutter) {
                     perf!("still-received", "since_shutter_ms={:.0}", t.elapsed().as_secs_f64() * 1e3);
                 }
+                let mut still = still;
+                let front = still.info.facing == Facing::Front;
+                still.info.rotation = crate::device::upright(still.info.rotation, front, self.device);
+                still.zoom = self.zoom;
                 let raw = self.raw_enabled();
                 let input = sender.input_sender().clone();
                 std::thread::spawn(move || {
@@ -1297,6 +1392,7 @@ impl Component for App {
             // and the camera itself busy.
             Msg::Suspended(true) if self.recorder.is_none() && self.countdown.is_none() && !self.cameras.is_empty() => {
                 self.suspended = true;
+                self.orientation.claim(false);
                 if let Some(b) = self.backend() {
                     b.send(Cmd::Close);
                 }
@@ -1307,6 +1403,7 @@ impl Component for App {
             }
             Msg::Suspended(false) if self.suspended => {
                 self.suspended = false;
+                self.orientation.claim(true);
                 self.reopen(w, self.camera, None);
             }
             Msg::Suspended(_) => {}
@@ -1320,6 +1417,17 @@ impl Component for App {
                     w.toasts.add_toast(adw::Toast::builder().title(gettext("Continuous autofocus")).timeout(2).build());
                 }
             }
+            Msg::Orientation(d) => {
+                self.device = d;
+                self.apply_orientation(w);
+            }
+            Msg::ZoomBegin => self.zoom_start = self.zoom,
+            Msg::Pinch(scale) => self.set_zoom(w, self.zoom_start * scale),
+            Msg::CycleZoom => {
+                let next = if self.zoom < 1.99 { 2.0 } else if self.zoom < 3.99 { 4.0 } else { 1.0 };
+                self.set_zoom(w, next);
+            }
+            Msg::Preferences => self.preferences(w),
             Msg::HideFocus(generation) => {
                 if generation == self.focus_generation {
                     self.focusing = false;
@@ -1397,6 +1505,11 @@ impl Component for App {
                 label(&w.capture, &tip);
                 if video { w.capture.add_css_class("video") } else { w.capture.remove_css_class("video") }
                 w.chips.fps.set_visible(video && self.panel.as_ref().is_some_and(|p| p.has("FrameDurationLimits")));
+                // ponytail: zoom crops photos only; recordings stay uncropped.
+                w.chips.zoom.set_visible(!video);
+                if video {
+                    self.set_zoom(w, 1.0);
+                }
                 // Video wants a 16:9 mode, photos the full sensor.
                 if let Some(s) = &self.session {
                     let target = if video {
@@ -1425,6 +1538,11 @@ impl Component for App {
                         if let Some(t) = self.perf.as_ref().and_then(|p| p.borrow_mut().shutter.take()) {
                             perf!("thumbnail-shown", "since_shutter_ms={:.0}", t.elapsed().as_secs_f64() * 1e3);
                         }
+                        if w.controls_toggle.is_active() {
+                            // The gallery button is under the controls.
+                            let toast = adw::Toast::builder().title(gettext("Photo saved")).button_label(gettext("_Open")).action_name("app.open-last").timeout(3).build();
+                            w.toasts.add_toast(toast);
+                        }
                         w.gallery.add_css_class("new");
                         let g = w.gallery.clone();
                         glib::timeout_add_local_once(Duration::from_millis(400), move || g.remove_css_class("new"));
@@ -1442,6 +1560,63 @@ impl Component for App {
 }
 
 impl App {
+    fn feedback(&self) {
+        if self.settings.as_ref().is_none_or(|s| s.boolean("shutter-sound")) {
+            crate::device::feedback("camera-shutter");
+        }
+    }
+
+    fn set_zoom(&mut self, w: &Widgets, zoom: f64) {
+        self.zoom = zoom.clamp(1.0, 4.0);
+        w.viewfinder.set_zoom(self.zoom as f32);
+        let text = if (self.zoom - self.zoom.round()).abs() < 0.05 { format!("{:.0}×", self.zoom) } else { format!("{:.1}×", self.zoom) };
+        set_chip(&w.chips.zoom, &text, self.zoom > 1.0);
+    }
+
+    /// Turn the viewfinder for the display: when the compositor has rotated
+    /// the screen to follow the device, the picture must turn with it.
+    fn apply_orientation(&mut self, w: &Widgets) {
+        let monitor = w.window.surface().and_then(|s| WidgetExt::display(&w.window).monitor_at_surface(&s));
+        let Some(geometry) = monitor.map(|m| m.geometry()) else { return };
+        let landscape = geometry.width() > geometry.height();
+        if self.device % 180 == 0 {
+            self.natural_landscape = Some(landscape);
+        }
+        // Until the device has been seen upright, assume a phone: portrait.
+        let rotated = landscape != self.natural_landscape.unwrap_or(false);
+        let display = if rotated && self.device % 180 != 0 { self.device } else { 0 };
+        if display == self.display_rotation {
+            return;
+        }
+        self.display_rotation = display;
+        if let Some(session) = &self.session {
+            let front = session.info.facing == Facing::Front;
+            w.viewfinder.set_rotation(crate::device::upright(session.info.rotation, front, display), front);
+            w.grid.queue_draw();
+        }
+    }
+
+    fn preferences(&self, w: &Widgets) {
+        let Some(settings) = &self.settings else { return };
+        let switch = |key: &str, title: &str, subtitle: &str| {
+            let row = adw::SwitchRow::builder().title(title).subtitle(subtitle).build();
+            settings.bind(key, &row, "active").build();
+            row
+        };
+        let capture = adw::PreferencesGroup::builder().title(gettext("Capture")).build();
+        capture.add(&switch("shutter-sound", &gettext("Shutter Sound"), &gettext("Play a sound or vibrate when taking pictures, as the device's feedback settings allow")));
+        capture.add(&switch("raw", &gettext("Save RAW"), &gettext("Also write a DNG next to each photo, on cameras that provide raw images")));
+        let viewfinder = adw::PreferencesGroup::builder().title(gettext("Viewfinder")).build();
+        viewfinder.add(&switch("grid", &gettext("Grid"), &gettext("Rule-of-thirds lines to help composition")));
+        viewfinder.add(&switch("show-info", &gettext("Capture Info"), &gettext("ISO, shutter speed, white balance and focus over the picture")));
+        let page = adw::PreferencesPage::new();
+        page.add(&capture);
+        page.add(&viewfinder);
+        let dialog = adw::PreferencesDialog::builder().title(gettext("Preferences")).build();
+        dialog.add(&page);
+        dialog.present(Some(&w.window));
+    }
+
     fn show_thumbnail(&mut self, w: &Widgets, path: PathBuf, thumb: Thumb) {
         let bytes = glib::Bytes::from_owned(thumb.rgba);
         let tex = gdk::MemoryTexture::new(thumb.width as i32, thumb.height as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, thumb.width as usize * 4);

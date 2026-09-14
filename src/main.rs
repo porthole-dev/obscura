@@ -5,6 +5,7 @@ mod perf;
 mod app;
 mod camera;
 mod controls;
+mod device;
 mod dng;
 mod photo;
 mod portal;
@@ -19,6 +20,8 @@ const CSS: &str = "
 viewfinder.viewfinder { transition: opacity 250ms ease-out; }
 viewfinder.viewfinder.flash { opacity: 0.1; transition: none; }
 viewfinder.viewfinder.switching { opacity: 0; transition: none; }
+.camera headerbar button { min-width: 38px; min-height: 38px; }
+.capture-bar-side { padding: 12px 16px; background: linear-gradient(to left, alpha(black, 0.65), alpha(black, 0.3) 75%, transparent); }
 .capture-bar { padding: 10px 18px 20px 18px; background: linear-gradient(to top, alpha(black, 0.65), alpha(black, 0.35) 75%, transparent); }
 .shutter { min-width: 76px; min-height: 76px; padding: 0; border-radius: 9999px; -gtk-icon-size: 28px; background-color: white; color: black; box-shadow: 0 0 0 4px alpha(white, 0.3); transition: transform 120ms ease-out, background-color 200ms, box-shadow 200ms; }
 .shutter:hover { background-color: alpha(white, 0.9); }
@@ -34,7 +37,7 @@ viewfinder.viewfinder.switching { opacity: 0; transition: none; }
 .gallery viewfinder { border-radius: 9999px; }
 .gallery.new { animation: pop 350ms ease-out; }
 @keyframes pop { 0% { transform: scale(0.5); } 70% { transform: scale(1.1); } 100% { transform: scale(1); } }
-.chip { min-height: 30px; padding: 0 9px; border-radius: 9999px; background-color: alpha(black, 0.45); color: white; font-size: 0.9em; font-weight: 600; }
+.chip { min-height: 36px; padding: 0 7px; border-radius: 9999px; background-color: alpha(black, 0.45); color: white; font-size: 0.9em; font-weight: 600; }
 .chip:hover { background-color: alpha(black, 0.65); }
 .chip.manual { color: #f6d32d; }
 .mode-switch { background-color: alpha(black, 0.45); }

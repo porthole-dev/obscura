@@ -33,6 +33,11 @@
       <summary>Show capture info</summary>
       <description>Show exposure, sensitivity, white balance, focus and frame rate over the viewfinder.</description>
     </key>
+    <key name="shutter-sound" type="b">
+      <default>true</default>
+      <summary>Shutter sound</summary>
+      <description>Play the feedback theme's shutter sound or vibration when taking a picture or starting and stopping a recording.</description>
+    </key>
     <key name="video" type="b">
       <default>false</default>
       <summary>Video mode</summary>

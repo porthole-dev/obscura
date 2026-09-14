@@ -32,6 +32,16 @@ fn gst_format(fourcc: u32) -> Option<&'static str> {
     })
 }
 
+/// A centred videocrop keeping 1/zoom of each side, or nothing at 1x.
+fn crop(w: usize, h: usize, zoom: f64) -> String {
+    if zoom <= 1.01 {
+        return String::new();
+    }
+    let (cw, ch) = ((w as f64 / zoom) as usize & !1, (h as f64 / zoom) as usize & !1);
+    let (x, y) = ((w - cw) / 2, (h - ch) / 2);
+    format!("videocrop left={x} right={} top={y} bottom={} ! ", w - cw - x, h - ch - y)
+}
+
 /// The videoflip method that turns a buffer `rotation` degrees clockwise.
 fn flip_method(rotation: i32) -> &'static str {
     match rotation.rem_euclid(360) {
@@ -79,7 +89,8 @@ pub fn save_jpeg(still: &Still, path: &Path) -> Result<()> {
     }
 
     let pipeline = gst::parse::launch(&format!(
-        "appsrc name=src ! videoconvert ! videoflip method={} ! jpegenc quality=92 ! jifmux name=mux ! filesink location=\"{}\"",
+        "appsrc name=src ! videoconvert ! {}videoflip method={} ! jpegenc quality=92 ! jifmux name=mux ! filesink location=\"{}\"",
+        crop(w, h, still.zoom),
         flip_method(still.info.rotation),
         path.display()
     ))?

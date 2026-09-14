@@ -15,6 +15,8 @@ mod imp {
     pub struct Viewfinder {
         pub texture: RefCell<Option<gdk::Texture>>,
         pub rotation: Cell<i32>,
+        /// Digital zoom: the centre 1/zoom of the picture fills its place.
+        pub zoom: Cell<f32>,
         pub mirror: Cell<bool>,
         /// Fill the widget and crop, instead of fitting inside it.
         pub cover: Cell<bool>,
@@ -44,7 +46,14 @@ mod imp {
             let Some(l) = self.obj().layout() else { return };
             let (tw, th) = (texture.width() as f32 * l.scale, texture.height() as f32 * l.scale);
             snapshot.save();
+            let zoomed = l.zoom > 1.0;
+            if zoomed {
+                snapshot.push_clip(&graphene::Rect::new(l.x, l.y, l.width, l.height));
+            }
             snapshot.translate(&graphene::Point::new(l.x + l.width / 2.0, l.y + l.height / 2.0));
+            if zoomed {
+                snapshot.scale(l.zoom, l.zoom);
+            }
             // Mirror the upright picture, not the sensor image: after a
             // quarter turn a sensor-space mirror is an upside-down flip.
             if self.mirror.get() {
@@ -56,6 +65,9 @@ mod imp {
                 gtk::gsk::ScalingFilter::Linear,
                 &graphene::Rect::new(-tw / 2.0, -th / 2.0, tw, th),
             );
+            if zoomed {
+                snapshot.pop();
+            }
             snapshot.restore();
         }
     }
@@ -67,8 +79,9 @@ pub struct Layout {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    /// Widget pixels per image pixel.
+    /// Widget pixels per image pixel, before zoom.
     pub scale: f32,
+    pub zoom: f32,
 }
 
 glib::wrapper! {
@@ -94,6 +107,11 @@ impl Viewfinder {
         self.queue_draw();
     }
 
+    pub fn set_zoom(&self, zoom: f32) {
+        self.imp().zoom.set(zoom);
+        self.queue_draw();
+    }
+
     pub fn set_rotation(&self, degrees: i32, mirror: bool) {
         self.imp().rotation.set(degrees);
         self.imp().mirror.set(mirror);
@@ -103,7 +121,8 @@ impl Viewfinder {
     pub fn layout(&self) -> Option<Layout> {
         let texture = self.imp().texture.borrow().clone()?;
         let size = (self.width() as f32, self.height() as f32);
-        Some(fit(size, (texture.width() as f32, texture.height() as f32), self.imp().rotation.get(), self.imp().cover.get()))
+        let l = fit(size, (texture.width() as f32, texture.height() as f32), self.imp().rotation.get(), self.imp().cover.get());
+        Some(Layout { zoom: self.imp().zoom.get().max(1.0), ..l })
     }
 
     /// Where a point on the widget lands on the sensor image, normalised to
@@ -145,14 +164,14 @@ fn fit((w, h): (f32, f32), (tw, th): (f32, f32), rotation: i32, cover: bool) -> 
     let scale = if cover { (w / uw).max(h / uh) } else { (w / uw).min(h / uh) };
     let (width, height) = (uw * scale, uh * scale);
     let y = if height < h { 0.0 } else { (h - height) / 2.0 };
-    Layout { x: (w - width) / 2.0, y, width, height, scale }
+    Layout { x: (w - width) / 2.0, y, width, height, scale, zoom: 1.0 }
 }
 
 fn to_sensor(l: &Layout, rotation: i32, mirror: bool, x: f64, y: f64) -> Option<(f64, f64)> {
     let rotation = rotation.rem_euclid(360);
     // Centred, in upright image pixels.
-    let mut u = (x - (l.x + l.width / 2.0) as f64) / l.scale as f64;
-    let v = (y - (l.y + l.height / 2.0) as f64) / l.scale as f64;
+    let mut u = (x - (l.x + l.width / 2.0) as f64) / (l.scale * l.zoom) as f64;
+    let v = (y - (l.y + l.height / 2.0) as f64) / (l.scale * l.zoom) as f64;
     if mirror {
         u = -u;
     }

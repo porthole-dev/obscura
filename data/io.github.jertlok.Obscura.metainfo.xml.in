@@ -34,6 +34,18 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.2.0" date="2026-09-15">
+      <description>
+        <p>A redesigned camera for phones and desktops.</p>
+        <ul>
+          <li>Pictures come out upright, including landscape shots on phones</li>
+          <li>Current exposure, white balance and focus over the viewfinder, one tap from their controls</li>
+          <li>Tap to focus, digital zoom, grid, self-timer, and shutter feedback</li>
+          <li>Controls in a sidebar or a bottom sheet, following the window size</li>
+          <li>Faster start and a viewfinder that never falls behind</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-09-14"/>
   </releases>
 </component>
