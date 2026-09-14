@@ -20,6 +20,10 @@ def call(path, interface, method, args=None, reply=None):
 session = call("/org/gnome/Mutter/RemoteDesktop", "org.gnome.Mutter.RemoteDesktop",
                "CreateSession", None, GLib.VariantType("(o)")).unpack()[0]
 call(session, SESSION, "Start")
+# The first key after a session starts can be lost while mutter sets up the
+# virtual keyboard: spend it on a Shift.
+for pressed in (True, False):
+    call(session, SESSION, "NotifyKeyboardKeysym", GLib.Variant("(ub)", (0xffe1, pressed)))
 if not os.path.exists(fifo):
     os.mkfifo(fifo)
 print("ready", flush=True)

@@ -152,6 +152,7 @@ pub enum Msg {
     Pinch(f64),
     CycleZoom,
     CycleFrameRate,
+    CloseControls,
     ShowInFiles,
     Preferences,
 }
@@ -912,6 +913,10 @@ impl Component for App {
             keys.set_propagation_phase(gtk::PropagationPhase::Capture);
             let (s, page) = (sender.clone(), controls_page.clone());
             keys.connect_key_pressed(move |ctl, key, _, mods| {
+                // Escape puts the controls away (dialogs close themselves).
+                if key == gdk::Key::Escape && mods.is_empty() {
+                    s.input(Msg::CloseControls);
+                }
                 let shutter = matches!(key, gdk::Key::space | gdk::Key::Return | gdk::Key::KP_Enter) && mods.is_empty();
                 let focus = ctl.widget().and_downcast::<gtk::Window>().and_then(|w| gtk::prelude::GtkWindowExt::focus(&w));
                 if shutter && focus.is_none_or(|f| !f.is_ancestor(&page)) {
@@ -1281,6 +1286,7 @@ impl Component for App {
 
     fn update_with_view(&mut self, w: &mut Self::Widgets, msg: Msg, sender: ComponentSender<Self>, _: &Self::Root) {
         match msg {
+            Msg::CloseControls => w.controls_toggle.set_active(false),
             Msg::ToggleControls => w.controls_toggle.set_active(!w.controls_toggle.is_active()),
             Msg::ShowControl(names) => {
                 w.controls_toggle.set_active(true);

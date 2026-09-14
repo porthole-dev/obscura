@@ -42,7 +42,34 @@ expect() {
 	printf 'ok    %-34s %s\n' "$name" "$(grep "obscura-perf [0-9.]* $event" "$log" | tail -1 | cut -d' ' -f2-)"
 }
 shot() { step=$((step + 1)); "$P" shot "$(printf %02d "$step")-$1" && cp "$target/run/shots/$(printf %02d "$step")-$1.png" "$out/"; }
-stop() { cp "$log" "$out/${1:-run}.log" 2>/dev/null; "$P" stop; }
+# GTK and libadwaita criticals and warnings are bugs; a missing accessibility
+# bus on a bare host is not the app's.
+gtk_warnings() {
+	grep -E "(Gtk|Gdk|Gsk|Adwaita|GLib|GLib-GObject|GLib-GIO)-(CRITICAL|WARNING)" "$log" 2>/dev/null | grep -v "Unable to register the application" || true
+}
+stop() {
+	cp "$log" "$out/${1:-run}.log" 2>/dev/null
+	local w
+	w=$(gtk_warnings)
+	if [ -n "$w" ]; then
+		printf 'FAIL  %-34s\n%s\n' "no GTK warnings (${1:-run})" "$(echo "$w" | head -3 | sed 's/^/        /')"; failed=$((failed + 1))
+	fi
+	"$P" stop
+}
+# check NAME COMMAND...: run a tool if it is installed
+tool() {
+	local name=$1
+	shift
+	if ! command -v "$1" >/dev/null; then echo "skip  $name (no $1)"; return; fi
+	if out_text=$("$@" 2>&1); then printf 'ok    %-34s\n' "$name"; else printf 'FAIL  %-34s\n%s\n' "$name" "$(echo "$out_text" | tail -5 | sed 's/^/        /')"; failed=$((failed + 1)); fi
+}
+
+# Data files
+tool "metainfo validates" appstreamcli validate --no-net --pedantic "$root/data/io.github.jertlok.Obscura.metainfo.xml.in"
+cp "$root/data/io.github.jertlok.Obscura.desktop.in" "$out/io.github.jertlok.Obscura.desktop"
+tool "desktop file validates" desktop-file-validate "$out/io.github.jertlok.Obscura.desktop"
+tool "settings schema compiles" glib-compile-schemas --strict --dry-run "$root/data"
+for po in "$root"/po/*.po; do tool "translation $(basename "$po")" msgfmt -c -o /dev/null "$po"; done
 start() { "$P" start "$@" >/dev/null || { echo "FAIL  start $*"; failed=$((failed + 1)); return 1; }; }
 
 # Permission and camera states
@@ -105,6 +132,20 @@ else
 	sleep 2; "$P" act capture; expect "record stop" "recording-saved" 1 20
 fi
 "$P" act mode photo; expect "photo mode" "frame-first-presented" $((presented + 3)) 20
+# Keyboard: Escape puts the controls away; Tab reaches the capture controls.
+"$P" act toggle-controls; expect "controls open (keyboard)" "controls open=true" 2
+sleep 0.5; "$P" key 0xff1b; expect "Escape closes controls" "controls open=false" 2
+if python3 -c "import pyatspi" 2>/dev/null && "$P" a11y focus >/dev/null 2>&1; then
+	reached=""
+	for _ in $(seq 16); do "$P" key 0xff09; sleep 0.3; reached="$reached|$("$P" a11y focus)"; done
+	for name in "Take Photo" "Switch Camera" "Camera Controls" "Main Menu"; do
+		case $reached in *"$name"*) printf 'ok    %-34s\n' "Tab reaches $name" ;; *) printf 'FAIL  %-34s reached: %s\n' "Tab reaches $name" "$reached"; failed=$((failed + 1)) ;; esac
+	done
+	shot focus
+	if names=$("$P" a11y names); then printf 'ok    %-34s\n' "every control has a name"; else printf 'FAIL  %-34s\n%s\n' "every control has a name" "$(echo "$names" | head -8 | sed 's/^/        /')"; failed=$((failed + 1)); fi
+else
+	echo "skip  keyboard focus and names (no AT-SPI here)"
+fi
 "$P" act preferences; expect "preferences" "preferences" && shot preferences
 if grep -q "exceeds AdwApplicationWindow width" "$log"; then
 	printf 'FAIL  %-34s %s\n' "fits a 360 px window" "$(grep -m1 -o 'requested [0-9]* px' "$log")"; failed=$((failed + 1))
@@ -119,6 +160,19 @@ fi
 stop main
 
 # Wide window and landscape phone layouts
+# Italian, at phone width: nothing may overflow
+PREVIEW_LANGUAGE=it OBSCURA_FAKE=taimen start 360 720 && expect "italian: first frame" "frame-first-presented" 1 30 && shot italian
+"$P" act toggle-controls; sleep 1.5; shot italian-controls; "$P" act toggle-controls
+"$P" act preferences; expect "italian: preferences" "preferences" && shot italian-preferences
+if grep -q "exceeds AdwApplicationWindow width" "$log"; then printf 'FAIL  %-34s %s\n' "italian fits 360 px" "$(grep -m1 -o 'requested [0-9]* px' "$log")"; failed=$((failed + 1)); else printf 'ok    %-34s\n' "italian fits 360 px"; fi
+stop italian
+
+# Reduced motion and high contrast
+PREVIEW_REDUCED_MOTION=1 ADW_DEBUG_HIGH_CONTRAST=1 OBSCURA_FAKE=taimen start 360 720 && expect "reduced motion: first frame" "frame-first-presented" 1 30
+"$P" act capture; expect "reduced motion: photo" "thumbnail-preview"
+"$P" act switch-camera; expect "reduced motion: switch" "frame-first-presented" 2 20 && shot high-contrast
+stop reduced-motion
+
 OBSCURA_FAKE=$main_fake start 1000 680 && expect "wide: first frame" "frame-first-presented" 1 30 && "$P" act toggle-controls && sleep 1 && shot wide-sidebar
 stop wide
 OBSCURA_FAKE=$main_fake start 760 360 && expect "landscape: first frame" "frame-first-presented" 1 30 && shot landscape

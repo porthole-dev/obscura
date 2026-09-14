@@ -55,6 +55,18 @@ start) # [WIDTH HEIGHT]; OBSCURA_FAKE=taimen|denied|nocamera|busy (default taime
 	cp "$root"/data/*.gschema.xml "$state/schemas/"
 	glib-compile-schemas "$state/schemas"
 	printf '[io/github/jertlok/Obscura]\nwindow-width=%s\nwindow-height=%s\n%b\n' "$width" "$height" "${PREVIEW_SETTINGS:-}" > "$state/config/glib-2.0/settings/keyfile"
+	# PREVIEW_REDUCED_MOTION=1: no animations; PREVIEW_LANGUAGE=it: that
+	# translation, compiled from po/.
+	if [ -n "${PREVIEW_REDUCED_MOTION:-}" ]; then
+		mkdir -p "$state/config/gtk-4.0"
+		printf '[Settings]\ngtk-enable-animations=0\n' > "$state/config/gtk-4.0/settings.ini"
+	fi
+	lang_env=()
+	if [ -n "${PREVIEW_LANGUAGE:-}" ]; then
+		mkdir -p "$state/locale/$PREVIEW_LANGUAGE/LC_MESSAGES"
+		msgfmt -o "$state/locale/$PREVIEW_LANGUAGE/LC_MESSAGES/obscura.mo" "$root/po/$PREVIEW_LANGUAGE.po"
+		lang_env=(LANGUAGE="$PREVIEW_LANGUAGE" LANG="${PREVIEW_LANGUAGE}_$(echo "$PREVIEW_LANGUAGE" | tr a-z A-Z).UTF-8" OBSCURA_LOCALEDIR="$state/locale")
+	fi
 	daemon=${DBUS_DAEMON:-$(command -v dbus-daemon || true)}
 	[ -n "$daemon" ] || { echo "needs dbus-daemon (or DBUS_DAEMON=/path/to/it)" >&2; exit 1; }
 	bus=${XDG_RUNTIME_DIR:-/tmp}/obscura-preview-bus-$$
@@ -68,7 +80,7 @@ start) # [WIDTH HEIGHT]; OBSCURA_FAKE=taimen|denied|nocamera|busy (default taime
 	for _ in $(seq 100); do [ -S "${XDG_RUNTIME_DIR:-/tmp}/$wl" ] && break; sleep 0.1; done
 	env -u DISPLAY WAYLAND_DISPLAY="$wl" GDK_BACKEND=wayland GSK_RENDERER="${GSK_RENDERER:-cairo}" NO_AT_BRIDGE=1 \
 		GSETTINGS_SCHEMA_DIR="$state/schemas" GSETTINGS_BACKEND=keyfile XDG_CONFIG_HOME="$state/config" HOME="$state" \
-		OBSCURA_FAKE="${OBSCURA_FAKE-taimen}" OBSCURA_PERF=1 RUST_LOG="${RUST_LOG:-warn}" \
+		OBSCURA_FAKE="${OBSCURA_FAKE-taimen}" OBSCURA_PERF=1 RUST_LOG="${RUST_LOG:-warn}" "${lang_env[@]}" \
 		"${run[@]}" "$bin" >"$state/app.log" 2>&1 &
 	{ echo "APP_PID=$!"; echo "export DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"; echo "WIDTH=$width HEIGHT=$height"; } >> "$state/env"
 	for _ in $(seq 600); do grep -q "obscura-perf .* window-painted" "$state/app.log" 2>/dev/null && break; sleep 0.1; done
@@ -95,9 +107,10 @@ shot) # NAME: window to $state/shots/NAME.png
 point) load; input point "$1" "$2" ;; # X Y in window coordinates (the window is at the origin)
 click) load; input down; sleep "${1:-0.05}"; input up ;; # [SECONDS held]
 key) load; input key "$1" ;; # KEYSYM, e.g. 0x20 for space
+a11y) load; python3 "$here/a11y.py" "$@" ;; # names | focus
 log) cat "$state/app.log" ;;
 *)
-	echo "usage: $0 build | start [W H] | stop | act ACTION [PARAM] | shot NAME | point X Y | click [SECONDS] | key KEYSYM | log" >&2
+	echo "usage: $0 build | start [W H] | stop | act ACTION [PARAM] | shot NAME | point X Y | click [SECONDS] | key KEYSYM | a11y names|focus | log" >&2
 	exit 2
 	;;
 esac

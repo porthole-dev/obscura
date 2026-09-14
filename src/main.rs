@@ -60,7 +60,10 @@ fn main() {
     env_logger::init();
     // SAFETY: called first thing, before any other thread exists.
     unsafe { gettextrs::setlocale(gettextrs::LocaleCategory::LcAll, "") };
-    let localedir = option_env!("LOCALEDIR").unwrap_or("/usr/share/locale");
+    let localedir = option_env!("LOCALEDIR").unwrap_or("/usr/share/locale").to_string();
+    // The preview harness runs translations from the build tree.
+    #[cfg(feature = "preview")]
+    let localedir = std::env::var("OBSCURA_LOCALEDIR").unwrap_or(localedir);
     let _ = gettextrs::bindtextdomain(GETTEXT_PACKAGE, localedir);
     let _ = gettextrs::bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
     let _ = gettextrs::textdomain(GETTEXT_PACKAGE);
