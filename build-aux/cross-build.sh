@@ -4,7 +4,7 @@
 # runtime dependencies), with clang + lld. The result links the sysroot's musl
 # and libraries dynamically, like the packaged build.
 #   SYSROOT=~/.cache/obscura-sysroot CLANG_BIN=~/.local/share/swiftly/bin \
-#     build-aux/cross-build.sh [cargo args...]
+#     [CARGO_SUBCOMMAND=clippy] build-aux/cross-build.sh [cargo args...]
 # Output: target/aarch64-unknown-linux-musl/release/obscura
 set -eu
 cd "$(dirname "$0")/.."
@@ -38,4 +38,4 @@ export LIBCLANG_PATH=${LIBCLANG_PATH:-$(ls -d "$HOME"/.local/share/swiftly/toolc
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl="--target=aarch64-alpine-linux-musl --sysroot=$sysroot"
 export LOCALEDIR=${LOCALEDIR:-/usr/share/locale}
 
-exec cargo build --release --target "$triple" "$@"
+exec cargo "${CARGO_SUBCOMMAND:-build}" --release --target "$triple" "$@"

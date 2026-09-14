@@ -44,6 +44,8 @@ pub struct App {
     /// Bumped per tap, so a late hide does not hide a newer focus ring.
     focus_generation: u32,
     focusing: bool,
+    /// The compositor says nobody can see the window: the camera is closed.
+    suspended: bool,
 }
 
 #[derive(Debug)]
@@ -71,6 +73,7 @@ pub enum Msg {
     Grid(bool),
     TapFocus(f64, f64),
     HideFocus(u32),
+    Suspended(bool),
 }
 
 #[derive(Debug)]
@@ -461,6 +464,15 @@ impl Component for App {
                 }
             });
             viewfinder.add_controller(tap);
+            // Swipe sideways between photo and video, like phone cameras.
+            let swipe = gtk::GestureSwipe::new();
+            swipe.connect_swipe(|_, vx, vy| {
+                if vx.abs() > 500.0 && vx.abs() > 2.0 * vy.abs() {
+                    let mode = if vx < 0.0 { "video" } else { "photo" };
+                    relm4::main_application().activate_action("mode", Some(&mode.to_variant()));
+                }
+            });
+            viewfinder.add_controller(swipe);
         }
 
         let focus_ring = gtk::Box::builder().css_classes(["focus-ring"]).width_request(76).height_request(76).visible(false).build();
@@ -759,6 +771,10 @@ impl Component for App {
             let s = sender.clone();
             grid_action.connect_notify_local(Some("state"), move |a, _| s.input(Msg::Grid(action_bool(a))));
         }
+        {
+            let s = sender.clone();
+            window.connect_suspended_notify(move |w| s.input(Msg::Suspended(w.is_suspended())));
+        }
         let mode_handler = {
             let s = sender.clone();
             mode_row.connect_selected_notify(move |r| s.input(Msg::SelectModeIndex(r.selected())))
@@ -800,6 +816,7 @@ impl Component for App {
             countdown: None,
             focus_generation: 0,
             focusing: false,
+            suspended: false,
         };
         let widgets = Widgets {
             window,
@@ -909,6 +926,11 @@ impl Component for App {
                 w.switch.set_visible(cameras.len() > 1);
                 self.cameras = cameras;
                 self.reopen(w, index, None);
+            }
+            Msg::Camera(Event::Opened(_)) if self.suspended => {
+                if let Some(b) = self.backend() {
+                    b.send(Cmd::Close);
+                }
             }
             Msg::Camera(Event::Opened(session)) => {
                 w.controls_title.set_title(&session.info.name());
@@ -1118,6 +1140,23 @@ impl Component for App {
                 let (s, generation) = (sender.clone(), self.focus_generation);
                 glib::timeout_add_local_once(Duration::from_secs(4), move || s.input(Msg::HideFocus(generation)));
             }
+            // A hidden camera app should not keep the sensor, the battery
+            // and the camera itself busy.
+            Msg::Suspended(true) if self.recorder.is_none() && self.countdown.is_none() && !self.cameras.is_empty() => {
+                self.suspended = true;
+                if let Some(b) = self.backend() {
+                    b.send(Cmd::Close);
+                }
+                w.viewfinder.add_css_class("switching");
+                w.viewfinder.set_texture(None);
+                self.session = None;
+                w.capture.set_sensitive(false);
+            }
+            Msg::Suspended(false) if self.suspended => {
+                self.suspended = false;
+                self.reopen(w, self.camera, None);
+            }
+            Msg::Suspended(_) => {}
             Msg::HideFocus(generation) => {
                 if generation == self.focus_generation {
                     self.focusing = false;
