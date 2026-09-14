@@ -114,41 +114,68 @@ impl Viewfinder {
         self.queue_draw();
     }
 
-    /// Fitted (or, with cover, filled) and centred; with room to spare
-    /// vertically the picture sits at the top, like phone cameras, leaving
-    /// the bottom to the capture controls.
     pub fn layout(&self) -> Option<Layout> {
         let texture = self.imp().texture.borrow().clone()?;
-        let (w, h) = (self.width() as f32, self.height() as f32);
-        let (tw, th) = (texture.width() as f32, texture.height() as f32);
-        let (uw, uh) = if self.imp().rotation.get().rem_euclid(180) == 0 { (tw, th) } else { (th, tw) };
-        let scale = if self.imp().cover.get() { (w / uw).max(h / uh) } else { (w / uw).min(h / uh) };
-        let (width, height) = (uw * scale, uh * scale);
-        let y = if height < h { 0.0 } else { (h - height) / 2.0 };
-        Some(Layout { x: (w - width) / 2.0, y, width, height, scale })
+        let size = (self.width() as f32, self.height() as f32);
+        Some(fit(size, (texture.width() as f32, texture.height() as f32), self.imp().rotation.get(), self.imp().cover.get()))
     }
 
     /// Where a point on the widget lands on the sensor image, normalised to
     /// 0..1 in sensor coordinates, or None outside the image.
     pub fn to_sensor(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let l = self.layout()?;
-        let rotation = self.imp().rotation.get().rem_euclid(360);
-        // Centred, in upright image pixels.
-        let mut u = (x - (l.x + l.width / 2.0) as f64) / l.scale as f64;
-        let v = (y - (l.y + l.height / 2.0) as f64) / l.scale as f64;
-        if self.imp().mirror.get() {
-            u = -u;
-        }
-        // Undo the clockwise rotation.
-        let (sx, sy) = match rotation {
-            90 => (v, -u),
-            180 => (-u, -v),
-            270 => (-v, u),
-            _ => (u, v),
-        };
-        let (tw, th) = if rotation % 180 == 0 { (l.width, l.height) } else { (l.height, l.width) };
-        let (nx, ny) = (sx / (tw / l.scale) as f64 + 0.5, sy / (th / l.scale) as f64 + 0.5);
-        ((0.0..=1.0).contains(&nx) && (0.0..=1.0).contains(&ny)).then_some((nx, ny))
+        to_sensor(&self.layout()?, self.imp().rotation.get(), self.imp().mirror.get(), x, y)
+    }
+}
+
+/// Fitted (or, with cover, filled) and centred; with room to spare
+/// vertically the picture sits at the top, like phone cameras, leaving the
+/// bottom to the capture controls.
+fn fit((w, h): (f32, f32), (tw, th): (f32, f32), rotation: i32, cover: bool) -> Layout {
+    let (uw, uh) = if rotation.rem_euclid(180) == 0 { (tw, th) } else { (th, tw) };
+    let scale = if cover { (w / uw).max(h / uh) } else { (w / uw).min(h / uh) };
+    let (width, height) = (uw * scale, uh * scale);
+    let y = if height < h { 0.0 } else { (h - height) / 2.0 };
+    Layout { x: (w - width) / 2.0, y, width, height, scale }
+}
+
+fn to_sensor(l: &Layout, rotation: i32, mirror: bool, x: f64, y: f64) -> Option<(f64, f64)> {
+    let rotation = rotation.rem_euclid(360);
+    // Centred, in upright image pixels.
+    let mut u = (x - (l.x + l.width / 2.0) as f64) / l.scale as f64;
+    let v = (y - (l.y + l.height / 2.0) as f64) / l.scale as f64;
+    if mirror {
+        u = -u;
+    }
+    // Undo the clockwise rotation.
+    let (sx, sy) = match rotation {
+        90 => (v, -u),
+        180 => (-u, -v),
+        270 => (-v, u),
+        _ => (u, v),
+    };
+    let (tw, th) = if rotation % 180 == 0 { (l.width, l.height) } else { (l.height, l.width) };
+    let (nx, ny) = (sx / (tw / l.scale) as f64 + 0.5, sy / (th / l.scale) as f64 + 0.5);
+    ((0.0..=1.0).contains(&nx) && (0.0..=1.0).contains(&ny)).then_some((nx, ny))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taps_land_where_the_picture_is_drawn() {
+        // A 4:3 sensor turned 270 degrees in a portrait phone window: the
+        // picture is 480x640 at the top.
+        let l = fit((480.0, 900.0), (4032.0, 3024.0), 270, false);
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(near(l.x, 0.0) && near(l.y, 0.0) && near(l.width, 480.0) && near(l.height, 640.0));
+        // The buffer's right edge is drawn at the top.
+        let (nx, ny) = to_sensor(&l, 270, false, 240.0, 1.0).unwrap();
+        assert!((nx - 1.0).abs() < 0.01 && (ny - 0.5).abs() < 0.01, "{nx} {ny}");
+        // Mirrored (selfie) preview: the left of the screen is the right of the upright picture.
+        let (nx, ny) = to_sensor(&l, 90, true, 1.0, 320.0).unwrap();
+        assert!((nx - 0.5).abs() < 0.01 && (ny - 0.0).abs() < 0.01, "{nx} {ny}");
+        assert_eq!(to_sensor(&l, 270, false, 240.0, 700.0), None);
     }
 }
 

@@ -27,6 +27,8 @@ done
 
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$wrappers/clang"
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static -C link-self-contained=no"
+# `cargo test` runs the aarch64 test binary under qemu-user.
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER="qemu-aarch64-static -L $sysroot"
 export CC_aarch64_unknown_linux_musl="$wrappers/clang"
 export CXX_aarch64_unknown_linux_musl="$wrappers/clang++"
 export AR_aarch64_unknown_linux_musl="$bin/llvm-ar"
