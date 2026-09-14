@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3d3846"/>
+      <stop offset="1" stop-color="#241f31"/>
+    </linearGradient>
+    <radialGradient id="glass" cx="0.4" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#99c1f1"/>
+      <stop offset="0.45" stop-color="#1c71d8"/>
+      <stop offset="1" stop-color="#0b1b33"/>
+    </radialGradient>
+  </defs>
+  <rect x="12" y="20" width="104" height="92" rx="18" fill="#1e1a26"/>
+  <rect x="12" y="16" width="104" height="92" rx="18" fill="url(#body)"/>
+  <rect x="24" y="8" width="28" height="14" rx="5" fill="#5e5c64"/>
+  <circle cx="64" cy="62" r="36" fill="#deddda"/>
+  <circle cx="64" cy="62" r="31" fill="#241f31"/>
+  <circle cx="64" cy="62" r="25" fill="url(#glass)"/>
+  <!-- aperture blades -->
+  <g fill="none" stroke="#0b1b33" stroke-width="2.5" stroke-linecap="round" opacity="0.8">
+    <path d="M64 37 L74 58"/><path d="M85.7 49.5 L70 66"/><path d="M85.7 74.5 L64 72"/>
+    <path d="M64 87 L54 66"/><path d="M42.3 74.5 L58 58"/><path d="M42.3 49.5 L64 52"/>
+  </g>
+  <circle cx="55" cy="52" r="6" fill="#ffffff" opacity="0.55"/>
+  <circle cx="98" cy="32" r="5" fill="#e01b24"/>
+</svg>

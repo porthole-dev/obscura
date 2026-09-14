@@ -160,7 +160,7 @@ impl Component for App {
 
     fn init_root() -> Self::Root {
         adw::ApplicationWindow::builder()
-            .title(gettext("Camera"))
+            .title(gettext("Obscura"))
             .default_width(900)
             .default_height(640)
             .width_request(360)
@@ -174,7 +174,7 @@ impl Component for App {
             .map(|_| gio::Settings::new(APP_ID));
 
         // Header
-        let title = adw::WindowTitle::new(&gettext("Camera"), "");
+        let title = adw::WindowTitle::new(&gettext("Obscura"), "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
@@ -184,7 +184,7 @@ impl Component for App {
         let menu = gio::Menu::new();
         menu.append(Some(&gettext("Show Capture _Info")), Some("app.show-info"));
         menu.append(Some(&gettext("_Keyboard Shortcuts")), Some("win.show-help-overlay"));
-        menu.append(Some(&gettext("_About Camera")), Some("app.about"));
+        menu.append(Some(&gettext("_About Obscura")), Some("app.about"));
         header.pack_end(&gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).primary(true).build());
 
         // Viewfinder page
@@ -338,7 +338,7 @@ impl Component for App {
             let window = window.clone();
             about.connect_activate(move |_, _| {
                 adw::AboutDialog::builder()
-                    .application_name(gettext("Camera"))
+                    .application_name(gettext("Obscura"))
                     .application_icon(APP_ID)
                     .developer_name("Giuseppe Maggio")
                     .version(env!("CARGO_PKG_VERSION"))

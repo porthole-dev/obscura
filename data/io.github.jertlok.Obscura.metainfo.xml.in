@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Giuseppe Maggio -->
+<component type="desktop-application">
+  <id>io.github.jertlok.Obscura</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Obscura</name>
+  <summary>Take photos and videos with every control your camera has</summary>
+  <description>
+    <p>
+      Obscura is a camera app for phones and computers that talks to libcamera
+      directly, so it can offer whatever the camera itself can do.
+    </p>
+    <ul>
+      <li>Controls generated from what the camera reports: exposure time, sensitivity, exposure compensation, white balance, focus, frame rate and more</li>
+      <li>Every sensor mode the camera offers, from full resolution to high frame rate binned modes</li>
+      <li>RAW photos as DNG alongside JPEG</li>
+      <li>Live readout of exposure, sensitivity, colour temperature and focus</li>
+    </ul>
+  </description>
+  <developer id="io.github.jertlok">
+    <name>Giuseppe Maggio</name>
+  </developer>
+  <launchable type="desktop-id">io.github.jertlok.Obscura.desktop</launchable>
+  <url type="homepage">https://github.com/Jertlok/obscura</url>
+  <content_rating type="oars-1.1"/>
+  <translation type="gettext">obscura</translation>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+  <releases>
+    <release version="0.1.0" date="2026-09-14"/>
+  </releases>
+</component>
