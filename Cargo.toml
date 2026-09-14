@@ -1,0 +1,28 @@
+[package]
+name = "obscura"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+relm4 = { version = "0.11", features = ["libadwaita", "gnome_48"] }
+libcamera = "0.7"
+gst = { package = "gstreamer", version = "0.25" }
+gst-app = { package = "gstreamer-app", version = "0.25" }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "camera"] }
+gettext-rs = { version = "0.8", features = ["gettext-system"] }
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+libcamera-sys = "0.7"
+smallvec = "1"
+
+# libcamera 0.7.2+ headers use std::span (C++20) and no longer pull in
+# libcamera::Span transitively; the published libcamera-sys builds its shim as
+# C++17. Carried until libcamera-rs picks it up.
+[patch.crates-io]
+libcamera-sys = { path = "subprojects/libcamera-sys" }
+
+[profile.release]
+lto = "thin"
