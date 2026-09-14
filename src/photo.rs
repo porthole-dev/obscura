@@ -146,15 +146,18 @@ pub fn save_jpeg(still: &Still, path: &Path) -> Result<()> {
 
 /// Save a still as JPEG, plus DNG when it carries raw data and `raw` is set.
 /// Returns the JPEG path.
-pub fn save(still: &Still, raw: bool) -> Result<PathBuf> {
-    let dir = pictures_dir();
-    let stem = file_stem();
-    let jpeg = dir.join(format!("{stem}.jpg"));
-    save_jpeg(still, &jpeg)?;
+/// Where the next photo goes, decided at the shutter so it can be opened
+/// before it is written.
+pub fn next_path() -> PathBuf {
+    pictures_dir().join(format!("{}.jpg", file_stem()))
+}
+
+pub fn save(still: &Still, raw: bool, jpeg: &Path) -> Result<PathBuf> {
+    save_jpeg(still, jpeg)?;
     perf!("photo-jpeg-written");
     if raw && let Some(image) = &still.raw {
-        crate::dng::write(image, still, &dir.join(format!("{stem}.dng")))?;
+        crate::dng::write(image, still, &jpeg.with_extension("dng"))?;
         perf!("photo-dng-written");
     }
-    Ok(jpeg)
+    Ok(jpeg.to_path_buf())
 }

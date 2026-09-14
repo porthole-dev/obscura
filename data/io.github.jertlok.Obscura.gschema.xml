@@ -33,6 +33,11 @@
       <summary>Show capture info</summary>
       <description>Show exposure, sensitivity, white balance, focus and frame rate over the viewfinder.</description>
     </key>
+    <key name="full-resolution" type="b">
+      <default>true</default>
+      <summary>Full-resolution photos</summary>
+      <description>Take photos at the full photo size, switching the camera from its faster viewfinder mode for a moment; when off, photos come straight from the viewfinder.</description>
+    </key>
     <key name="shutter-sound" type="b">
       <default>true</default>
       <summary>Shutter sound</summary>

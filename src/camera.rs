@@ -169,7 +169,12 @@ pub struct Still {
 
 #[derive(Debug)]
 pub enum Cmd {
-    Open { camera: usize, mode: Option<Mode> },
+    /// `mode` is the photo (or video) size; for photos the viewfinder may
+    /// run a smaller, faster mode of the same shape.
+    Open { camera: usize, mode: Option<Mode>, video: bool },
+    /// Photos from the full sensor mode (a quick reconfiguration per shot)
+    /// rather than from the viewfinder.
+    FullResolution(bool),
     SetControl { id: u32, value: Vec<f64> },
     /// Meter autofocus around a point, in 0..1 sensor coordinates.
     FocusAt(f64, f64),
@@ -300,18 +305,22 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit:
 
     let mut session: Option<Live> = None;
     let mut copy_frames = false;
+    let mut full_resolution = true;
+    // Commands that arrived while a session was closing.
+    let mut backlog = std::collections::VecDeque::new();
 
-    while let Ok(msg) = rx.recv() {
+    while let Some(msg) = backlog.pop_front().or_else(|| rx.recv().ok()) {
         match msg {
-            Internal::Cmd(Cmd::Open { camera, mode }) => {
+            Internal::Cmd(Cmd::Open { camera, mode, video }) => {
                 if let Some(live) = session.take() {
-                    live.close(&rx);
+                    backlog.extend(live.close(&rx, &slot));
                 }
                 let Some(cam) = cameras.get(camera) else {
                     emit(Event::Error(format!("no camera {camera}")));
                     continue;
                 };
-                match Live::open(cam, camera, infos[camera].clone(), mode, &tx) {
+                let purpose = if video { Purpose::Video } else { Purpose::Preview };
+                match Live::open(cam, camera, infos[camera].clone(), mode, purpose, &[], &tx) {
                     Ok((live, info)) => {
                         emit(Event::Opened(info));
                         session = Some(live);
@@ -319,6 +328,7 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit:
                     Err(e) => emit(Event::Error(e)),
                 }
             }
+            Internal::Cmd(Cmd::FullResolution(on)) => full_resolution = on,
             Internal::Cmd(Cmd::SetControl { id, value }) => {
                 if let Some(live) = session.as_mut() {
                     live.set_control(id, &value);
@@ -329,11 +339,38 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit:
                     live.focus_at(x, y);
                 }
             }
-            Internal::Cmd(Cmd::Capture) => {
-                if let Some(live) = session.as_mut() {
-                    live.capture_next = true;
+            Internal::Cmd(Cmd::Capture) => match session.take() {
+                // The viewfinder runs a smaller mode: switch to the photo mode
+                // with the viewfinder's exposure, white balance and focus held
+                // manually, take the first frame that has them, switch back.
+                Some(live) if full_resolution && live.purpose == Purpose::Preview && live.view_mode != live.info.mode => {
+                    perf!("still-reconfigure", "{}x{}", live.info.mode.width, live.info.mode.height);
+                    let (index, info, mode, user) = (live.info.camera, live.info.info.clone(), live.info.mode, live.user.clone());
+                    let held = seed(&live.info.controls, &live.meta);
+                    let expect = (live.meta.get("ExposureTime"), live.meta.get("AnalogueGain"));
+                    backlog.extend(live.close(&rx, &slot));
+                    let initial: Vec<_> = user.iter().cloned().chain(held).collect();
+                    match cameras.get(index).map(|cam| Live::open(cam, index, info.clone(), Some(mode), Purpose::Still, &initial, &tx)) {
+                        Some(Ok((mut still, _))) => {
+                            still.capture_next = true;
+                            still.expect = expect;
+                            still.user = user;
+                            session = Some(still);
+                        }
+                        other => {
+                            if let Some(Err(e)) = other {
+                                emit(Event::Error(e));
+                            }
+                            session = cameras.get(index).and_then(|cam| Live::open(cam, index, info, Some(mode), Purpose::Preview, &user, &tx).ok()).map(|(l, _)| l);
+                        }
+                    }
                 }
-            }
+                Some(mut live) => {
+                    live.capture_next = true;
+                    session = Some(live);
+                }
+                None => {}
+            },
             Internal::Cmd(Cmd::Record(recorder)) => {
                 if let Some(live) = session.as_mut() {
                     live.recorder = recorder;
@@ -342,11 +379,28 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit:
             Internal::Cmd(Cmd::CopyFrames(on)) => copy_frames = on,
             Internal::Cmd(Cmd::Close) => {
                 if let Some(live) = session.take() {
-                    live.close(&rx);
+                    backlog.extend(live.close(&rx, &slot));
                 }
             }
             Internal::Done(req) => match session.as_mut() {
-                Some(live) => live.completed(req, copy_frames, &tx, &slot, &emit),
+                Some(live) => {
+                    live.completed(req, copy_frames, &tx, &slot, &emit);
+                    // The photo is taken: back to the fast viewfinder, with
+                    // the user's own settings.
+                    if live.purpose == Purpose::Still && !live.capture_next {
+                        let live = session.take().unwrap();
+                        let (index, info, mode, user) = (live.info.camera, live.info.info.clone(), live.info.mode, live.user.clone());
+                        backlog.extend(live.close(&rx, &slot));
+                        match cameras.get(index).map(|cam| Live::open(cam, index, info, Some(mode), Purpose::Preview, &user, &tx)) {
+                            Some(Ok((live, _))) => {
+                                perf!("viewfinder-restored");
+                                session = Some(live);
+                            }
+                            Some(Err(e)) => emit(Event::Error(e)),
+                            None => {}
+                        }
+                    }
+                }
                 None => drop(req),
             },
             Internal::Returned(req, generation) => match session.as_mut() {
@@ -374,6 +428,72 @@ struct Live {
     outstanding: usize,
     /// The frame AfWindows are expressed in.
     crop_max: Option<libcamera::geometry::Rectangle>,
+    purpose: Purpose,
+    /// What the viewfinder stream runs at; `info.mode` is the photo size.
+    view_mode: Mode,
+    /// Every control the user set, in order, to carry across reconfigurations.
+    user: Vec<(u32, Vec<f64>)>,
+    /// The newest metadata sent to the interface.
+    meta: Metadata,
+    /// A still session waits for these exposure and gain before shooting.
+    expect: (Option<f64>, Option<f64>),
+    frames_seen: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    /// A viewfinder for photos: the fastest mode of the photo's shape.
+    Preview,
+    /// One photo at the full photo mode, then back to Preview.
+    Still,
+    /// Viewfinder and recording at the chosen mode.
+    Video,
+}
+
+/// The smallest mode of `photo`'s shape that is still sharp on a phone or
+/// laptop screen; binned modes also run faster.
+fn viewfinder_mode(modes: &[Mode], photo: Mode) -> Mode {
+    let ratio = |m: &Mode| m.width as f64 / m.height.max(1) as f64;
+    modes
+        .iter()
+        .copied()
+        .filter(|m| (ratio(m) - ratio(&photo)).abs() < 0.03 && m.width <= photo.width && m.width >= photo.width.min(1920))
+        .min_by_key(|m| m.width)
+        .unwrap_or(photo)
+}
+
+/// Manual controls that hold what the camera chose automatically in `meta`,
+/// for the controls this camera has.
+fn seed(controls: &[ControlDesc], meta: &Metadata) -> Vec<(u32, Vec<f64>)> {
+    let find = |name: &str| controls.iter().find(|c| c.name == name);
+    let manual = |name: &str| find(name).and_then(|c| c.enums.iter().find(|(_, n)| n.ends_with("Manual")).map(|(v, _)| (c.id, vec![*v as f64])));
+    let mut out = Vec::new();
+    if let (Some(e), Some(g)) = (meta.get("ExposureTime"), meta.get("AnalogueGain")) {
+        out.extend(find("AeEnable").map(|c| (c.id, vec![0.0])));
+        out.extend(manual("ExposureTimeMode"));
+        out.extend(manual("AnalogueGainMode"));
+        out.extend(find("ExposureTime").map(|c| (c.id, vec![e])));
+        out.extend(find("AnalogueGain").map(|c| (c.id, vec![g])));
+    }
+    if let Some(gains) = meta.values.get("ColourGains").filter(|g| g.len() == 2) {
+        out.extend(find("AwbEnable").map(|c| (c.id, vec![0.0])));
+        out.extend(find("ColourGains").map(|c| (c.id, gains.clone())));
+    }
+    if let Some(lens) = meta.get("LensPosition") {
+        out.extend(manual("AfMode"));
+        out.extend(find("LensPosition").map(|c| (c.id, vec![lens])));
+    }
+    out
+}
+
+fn control_value(desc: &ControlDesc, value: &[f64]) -> Option<ControlValue> {
+    Some(match desc.kind {
+        Kind::Bool => ControlValue::Bool(value.iter().map(|x| *x != 0.0).collect()),
+        Kind::Int if control_type(desc.id) == Some(LIBCAMERA_INT64) => ControlValue::Int64(value.iter().map(|x| x.round() as i64).collect()),
+        Kind::Int => ControlValue::Int32(value.iter().map(|x| x.round() as i32).collect()),
+        Kind::Float => ControlValue::Float(value.iter().map(|x| *x as f32).collect()),
+        Kind::Other => return None,
+    })
 }
 
 impl Live {
@@ -382,21 +502,25 @@ impl Live {
         index: usize,
         mut info: CameraInfo,
         mode: Option<Mode>,
+        purpose: Purpose,
+        initial: &[(u32, Vec<f64>)],
         tx: &Sender<Internal>,
     ) -> Result<(Self, Session), String> {
         let mut cam = cam.acquire().map_err(|e| format!("cannot acquire camera: {e}"))?;
         perf!("camera-acquired", "camera={index}");
         let modes = sensor_modes(&cam);
-        let mode = mode
-            .filter(|m| modes.contains(m))
-            .or_else(|| modes.first().copied());
-
-        // Viewfinder plus a raw stream when the pipeline can do both, else
-        // the viewfinder alone.
-        let (mut cfg, raw) = match mode.and_then(|m| configure(&cam, m, true)) {
+        let photo = mode.filter(|m| modes.contains(m)).or_else(|| modes.first().copied());
+        let view_mode = match (purpose, photo) {
+            (Purpose::Preview, Some(p)) => Some(viewfinder_mode(&modes, p)),
+            _ => photo,
+        };
+        // A raw stream where a photo can come from this session; a preview
+        // that hands photos to a Still session does not need one.
+        let want_raw = purpose != Purpose::Preview || view_mode == photo;
+        let (mut cfg, raw) = match view_mode.filter(|_| want_raw).and_then(|m| configure(&cam, m, true)) {
             Some(cfg) => (cfg, true),
             None => (
-                configure(&cam, mode.unwrap_or(Mode { width: 1280, height: 720 }), false)
+                configure(&cam, view_mode.unwrap_or(Mode { width: 1280, height: 720 }), false)
                     .ok_or("no usable camera configuration")?,
                 false,
             ),
@@ -412,10 +536,11 @@ impl Live {
         let view = view_cfg.stream().ok_or("no viewfinder stream")?;
         let view_size = view_cfg.get_size();
         let raw_stream = if raw { cfg.get(1).and_then(|c| c.stream()) } else { None };
-        let mode = match raw_stream.and_then(|s| s.configuration().map(|c| c.get_size())) {
+        let view_mode = match raw_stream.and_then(|s| s.configuration().map(|c| c.get_size())) {
             Some(size) => Mode { width: size.width, height: size.height },
             None => Mode { width: view_size.width, height: view_size.height },
         };
+        let mode = if want_raw || photo.is_none() { view_mode } else { photo.unwrap() };
 
         let mut alloc = FrameBufferAllocator::new(&cam);
         let view_bufs = alloc.alloc(&view).map_err(|e| format!("alloc: {e}"))?;
@@ -441,14 +566,20 @@ impl Live {
         cam.on_request_completed(move |req| {
             let _ = done.send(Internal::Done(req));
         });
-        cam.start(None).map_err(|e| format!("start: {e}"))?;
+        let controls = describe_controls(&cam);
+        let mut start = ControlList::new();
+        for (id, value) in initial {
+            if let Some(v) = controls.iter().find(|c| c.id == *id).and_then(|d| control_value(d, value)) {
+                let _ = start.set_raw(*id, v);
+            }
+        }
+        cam.start(Some(&start)).map_err(|e| format!("start: {e}"))?;
         let outstanding = requests.len();
         for req in requests {
             cam.queue_request(req).map_err(|(_, e)| format!("queue: {e}"))?;
         }
 
-        perf!("camera-started", "requests={outstanding}");
-        let controls = describe_controls(&cam);
+        perf!("camera-started", "requests={outstanding} purpose={purpose:?} view={}x{}", view_size.width, view_size.height);
         let fps = frame_duration_range(&cam);
         let crop_max = cam.properties().get::<properties::ScalerCropMaximum>().ok().map(|r| r.0);
         let af_windows = crop_max.is_some() && ["AfWindows", "AfMetering"].iter().all(|n| controls.iter().any(|c| c.name == *n));
@@ -460,7 +591,9 @@ impl Live {
             view: Mode { width: view_size.width, height: view_size.height },
             fourcc: view.configuration().map(|c| c.get_pixel_format().fourcc()).unwrap_or(0),
             controls,
-            raw: raw_stream.is_some(),
+            // A preview that passes photos to a Still session can save RAW
+            // when the camera has a raw role at all.
+            raw: raw_stream.is_some() || (!want_raw && sensor_modes_are_raw(&cam)),
             fps,
             af_windows,
         };
@@ -483,6 +616,12 @@ impl Live {
                 last_meta: Instant::now(),
                 outstanding,
                 crop_max,
+                purpose,
+                view_mode,
+                user: initial.to_vec(),
+                meta: Metadata::default(),
+                expect: (None, None),
+                frames_seen: 0,
             },
             session,
         ))
@@ -492,15 +631,12 @@ impl Live {
         let Some(desc) = self.info.controls.iter().find(|c| c.id == id) else {
             return;
         };
-        let v = match desc.kind {
-            Kind::Bool => ControlValue::Bool(value.iter().map(|x| *x != 0.0).collect()),
-            Kind::Int if control_type(id) == Some(LIBCAMERA_INT64) => {
-                ControlValue::Int64(value.iter().map(|x| x.round() as i64).collect())
-            }
-            Kind::Int => ControlValue::Int32(value.iter().map(|x| x.round() as i32).collect()),
-            Kind::Float => ControlValue::Float(value.iter().map(|x| *x as f32).collect()),
-            Kind::Other => return,
-        };
+        let Some(v) = control_value(desc, value) else { return };
+        // Triggers are one-shot; everything else is a setting to carry over.
+        if desc.name != "AfTrigger" {
+            self.user.retain(|(i, _)| *i != id);
+            self.user.push((id, value.to_vec()));
+        }
         if let Err(e) = self.pending.set_raw(id, v) {
             log::warn!("set {}: {e}", desc.name);
         }
@@ -535,9 +671,24 @@ impl Live {
             return drop(req);
         }
 
-        if self.last_meta.elapsed() > Duration::from_millis(200) {
+        if self.purpose == Purpose::Still {
+            self.frames_seen += 1;
+            let meta = read_metadata(req.metadata());
+            let near = |want: Option<f64>, got: Option<f64>| match (want, got) {
+                (Some(w), Some(g)) => (g - w).abs() <= w.abs() * 0.1 + 1.0,
+                _ => self.frames_seen >= 3,
+            };
+            // ponytail: eight frames is the patience for a held exposure to
+            // show up; a camera that ignores manual controls still gets a photo.
+            let settled = (near(self.expect.0, meta.get("ExposureTime")) && near(self.expect.1, meta.get("AnalogueGain"))) || self.frames_seen >= 8;
+            if !settled {
+                return self.requeue(req);
+            }
+            perf!("still-settled", "frames={}", self.frames_seen);
+        } else if self.last_meta.elapsed() > Duration::from_millis(200) {
             self.last_meta = Instant::now();
-            emit(Event::Metadata(read_metadata(req.metadata())));
+            self.meta = read_metadata(req.metadata());
+            emit(Event::Metadata(self.meta.clone()));
         }
 
         let Some((width, height, stride, fourcc)) = self
@@ -555,6 +706,11 @@ impl Live {
         }
         if std::mem::take(&mut self.first_frame) {
             perf!("frame-first-queued");
+        }
+        // A Still session's frames are never shown: the interface holds the
+        // last viewfinder picture meanwhile.
+        if self.purpose == Purpose::Still {
+            return self.requeue(req);
         }
         if copy {
             slot.deliver(Frame { width, height, stride, fourcc, fd, offset, size, bytes, ret: None }, emit);
@@ -635,8 +791,12 @@ impl Live {
 
     /// Stop, then wait for the requests the UI still holds so no buffer is
     /// freed under a texture.
-    fn close(mut self, rx: &Receiver<Internal>) {
+    /// Returns the commands that arrived meanwhile.
+    fn close(mut self, rx: &Receiver<Internal>, slot: &FrameSlot) -> Vec<Internal> {
         let _ = self.cam.stop();
+        // A frame waiting in the slot is one of ours.
+        drop(slot.frame.lock().unwrap().take());
+        let mut deferred = Vec::new();
         let deadline = Instant::now() + Duration::from_millis(800);
         while self.outstanding > 0 {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -645,17 +805,22 @@ impl Live {
                     self.outstanding -= 1;
                     drop(req);
                 }
-                Ok(Internal::Cmd(_)) => {}
+                Ok(cmd @ Internal::Cmd(_)) => deferred.push(cmd),
                 Err(_) => {
                     log::warn!("{} requests still out at close", self.outstanding);
                     break;
                 }
             }
         }
+        deferred
     }
 }
 
 /// Distinct sensor output sizes, largest first, from the raw role's formats.
+fn sensor_modes_are_raw(cam: &ActiveCamera) -> bool {
+    cam.generate_configuration(&[StreamRole::Raw]).is_some_and(|c| c.get(0).is_some())
+}
+
 fn sensor_modes(cam: &ActiveCamera) -> Vec<Mode> {
     let mut modes = Vec::new();
     for role in [StreamRole::Raw, StreamRole::ViewFinder] {
@@ -853,6 +1018,17 @@ fn read_metadata(list: &ControlList) -> Metadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewfinder_takes_the_binned_mode_of_the_same_shape() {
+        let m = |width, height| Mode { width, height };
+        let imx362 = [m(4032, 3032), m(4032, 2272), m(2016, 1512), m(2016, 1136)];
+        assert_eq!(viewfinder_mode(&imx362, m(4032, 3032)), m(2016, 1512));
+        assert_eq!(viewfinder_mode(&imx362, m(4032, 2272)), m(2016, 1136));
+        assert_eq!(viewfinder_mode(&imx362, m(2016, 1512)), m(2016, 1512));
+        // A webcam's largest mode is also its viewfinder.
+        assert_eq!(viewfinder_mode(&[m(1920, 1080), m(1280, 720)], m(1920, 1080)), m(1920, 1080));
+    }
 
     #[test]
     fn rotation_undoes_the_orientation() {

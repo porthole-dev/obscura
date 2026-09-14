@@ -51,6 +51,8 @@ pub struct App {
     granted: bool,
     /// The photo path has been warmed up in the background.
     warmed: bool,
+    /// Open the last capture as soon as it is written.
+    open_pending: bool,
     /// Device turn from the accelerometer, and the display turn it implies.
     device: i32,
     natural_landscape: Option<bool>,
@@ -226,6 +228,16 @@ fn mode_label(m: &Mode) -> String {
     format!("{} · {} · {} × {}", aspect(m), megapixels(m), m.width, m.height)
 }
 
+/// "4K", "1080p": what a recording at this sensor mode is called.
+fn video_name(m: &Mode) -> String {
+    match m.width {
+        3840.. => "4K".into(),
+        1920.. => "1080p".into(),
+        1280.. => "720p".into(),
+        _ => format!("{}p", m.height),
+    }
+}
+
 fn wide(m: &Mode) -> bool {
     (m.width as f64 / m.height.max(1) as f64 - 16.0 / 9.0).abs() < 0.05
 }
@@ -320,7 +332,7 @@ impl App {
         self.camera = index;
         let mode = mode.or_else(|| self.cameras.get(index).and_then(|c| self.saved_mode(&c.id)));
         if let Some(b) = self.backend() {
-            b.send(Cmd::Open { camera: index, mode });
+            b.send(Cmd::Open { camera: index, mode, video: self.video });
         }
     }
 
@@ -405,6 +417,24 @@ impl App {
             }
         } else if !self.saving {
             perf!("shutter");
+            // The thumbnail is what was on screen, right away; the saved
+            // photo's replaces it when written.
+            let front = session.info.facing == Facing::Front;
+            if let Some(copy) = w.viewfinder.freeze() {
+                w.thumbnail.set_texture(Some(copy));
+                w.thumbnail.set_rotation(0, front);
+                w.gallery_placeholder.set_visible(false);
+                w.gallery.set_sensitive(true);
+                w.gallery.add_css_class("new");
+                let g = w.gallery.clone();
+                glib::timeout_add_local_once(Duration::from_millis(400), move || g.remove_css_class("new"));
+                perf!("thumbnail-preview");
+                if w.controls_toggle.is_active() {
+                    // The gallery button is under the controls.
+                    let toast = adw::Toast::builder().title(gettext("Photo taken")).button_label(gettext("_Open")).action_name("app.open-last").timeout(3).build();
+                    w.toasts.add_toast(toast);
+                }
+            }
             if let Some(p) = &self.perf {
                 p.borrow_mut().shutter = Some(Instant::now());
             }
@@ -963,6 +993,11 @@ impl Component for App {
         }
 
         let video = settings.as_ref().is_some_and(|s| s.boolean("video"));
+        if let Some(s) = &settings {
+            backend.send(Cmd::FullResolution(s.boolean("full-resolution")));
+            let b = backend.clone();
+            s.connect_changed(Some("full-resolution"), move |s, k| b.send(Cmd::FullResolution(s.boolean(k))));
+        }
         let timer = settings.as_ref().map(|s| s.int("timer").max(0) as u32).unwrap_or(0);
         let model = App {
             backend: Some(backend),
@@ -991,6 +1026,7 @@ impl Component for App {
             perf: crate::perf::on().then(Default::default),
             granted: false,
             warmed: false,
+            open_pending: false,
             device: 0,
             natural_landscape: None,
             display_rotation: 0,
@@ -1167,11 +1203,12 @@ impl Component for App {
                 w.mode_row.set_selected(session.modes.iter().position(|m| *m == session.mode).unwrap_or(0) as u32);
                 w.mode_row.unblock_signal(&w.mode_handler);
                 let menu = gio::Menu::new();
-                for m in &session.modes {
-                    menu.append(Some(&mode_label(m)), Some(&format!("app.resolution::{}x{}", m.width, m.height)));
+                for m in session.modes.iter().filter(|m| !self.video || wide(m)) {
+                    let text = if self.video { format!("{} · {} × {}", video_name(m), m.width, m.height) } else { mode_label(m) };
+                    menu.append(Some(&text), Some(&format!("app.resolution::{}x{}", m.width, m.height)));
                 }
                 w.resolution.set_menu_model(Some(&menu));
-                w.resolution.set_label(&aspect(&session.mode));
+                w.resolution.set_label(&if self.video { video_name(&session.mode) } else { aspect(&session.mode) });
                 w.resolution.set_tooltip_text(Some(&format!("{} ({})", gettext("Resolution"), mode_label(&session.mode))));
                 w.resolution_action.set_state(&format!("{}x{}", session.mode.width, session.mode.height).to_variant());
 
@@ -1274,8 +1311,10 @@ impl Component for App {
                 still.zoom = self.zoom;
                 let raw = self.raw_enabled();
                 let input = sender.input_sender().clone();
+                let path = crate::photo::next_path();
+                self.last_capture = Some(path.clone());
                 std::thread::spawn(move || {
-                    let result = crate::photo::save(&still, raw).map_err(|e| e.to_string()).map(|path| (path, thumbnail(&still)));
+                    let result = crate::photo::save(&still, raw, &path).map_err(|e| e.to_string()).map(|path| (path, thumbnail(&still)));
                     let _ = input.send(Msg::Saved(result));
                 });
             }
@@ -1512,10 +1551,12 @@ impl Component for App {
                 }
                 // Video wants a 16:9 mode, photos the full sensor.
                 if let Some(s) = &self.session {
+                    // Video opens at 1080p (a fast, binned mode where there is
+                    // one) and photos at the full sensor; the menu offers the rest.
                     let target = if video {
-                        (!wide(&s.mode)).then(|| s.modes.iter().copied().filter(|m| wide(m) && m.width <= 4096).max_by_key(|m| m.width))
+                        Some(s.modes.iter().copied().filter(|m| wide(m) && m.width >= 1920).min_by_key(|m| m.width).or_else(|| s.modes.iter().copied().filter(wide).max_by_key(|m| m.width)))
                     } else {
-                        wide(&s.mode).then(|| s.modes.first().copied())
+                        Some(s.modes.first().copied())
                     };
                     if let Some(Some(mode)) = target {
                         let camera = s.camera;
@@ -1538,18 +1579,14 @@ impl Component for App {
                         if let Some(t) = self.perf.as_ref().and_then(|p| p.borrow_mut().shutter.take()) {
                             perf!("thumbnail-shown", "since_shutter_ms={:.0}", t.elapsed().as_secs_f64() * 1e3);
                         }
-                        if w.controls_toggle.is_active() {
-                            // The gallery button is under the controls.
-                            let toast = adw::Toast::builder().title(gettext("Photo saved")).button_label(gettext("_Open")).action_name("app.open-last").timeout(3).build();
-                            w.toasts.add_toast(toast);
+                        if std::mem::take(&mut self.open_pending) {
+                            sender.input(Msg::OpenLast);
                         }
-                        w.gallery.add_css_class("new");
-                        let g = w.gallery.clone();
-                        glib::timeout_add_local_once(Duration::from_millis(400), move || g.remove_css_class("new"));
                     }
                     Err(e) => w.toasts.add_toast(adw::Toast::new(&format!("{}: {e}", gettext("Could not save photo")))),
                 }
             }
+            Msg::OpenLast if self.saving => self.open_pending = true,
             Msg::OpenLast => {
                 if let Some(path) = &self.last_capture {
                     gtk::FileLauncher::new(Some(&gio::File::for_path(path))).launch(Some(&w.window), None::<&gio::Cancellable>, |_| {});
@@ -1605,6 +1642,7 @@ impl App {
         };
         let capture = adw::PreferencesGroup::builder().title(gettext("Capture")).build();
         capture.add(&switch("shutter-sound", &gettext("Shutter Sound"), &gettext("Play a sound or vibrate when taking pictures, as the device's feedback settings allow")));
+        capture.add(&switch("full-resolution", &gettext("Full-Resolution Photos"), &gettext("The camera switches to its full photo size for a moment; turn off for photos straight from the viewfinder, with no wait")));
         capture.add(&switch("raw", &gettext("Save RAW"), &gettext("Also write a DNG next to each photo, on cameras that provide raw images")));
         let viewfinder = adw::PreferencesGroup::builder().title(gettext("Viewfinder")).build();
         viewfinder.add(&switch("grid", &gettext("Grid"), &gettext("Rule-of-thirds lines to help composition")));

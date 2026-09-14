@@ -15,6 +15,9 @@ mod imp {
     pub struct Viewfinder {
         pub texture: RefCell<Option<gdk::Texture>>,
         pub rotation: Cell<i32>,
+        /// A copy of the last picture and where it was drawn, shown while the
+        /// camera reconfigures.
+        pub frozen: RefCell<Option<(gdk::Texture, graphene::Rect)>>,
         /// Digital zoom: the centre 1/zoom of the picture fills its place.
         pub zoom: Cell<f32>,
         pub mirror: Cell<bool>,
@@ -42,7 +45,12 @@ mod imp {
         }
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
-            let Some(texture) = self.texture.borrow().clone() else { return };
+            let Some(texture) = self.texture.borrow().clone() else {
+                if let Some((frozen, rect)) = self.frozen.borrow().as_ref() {
+                    snapshot.append_texture(frozen, rect);
+                }
+                return;
+            };
             let Some(l) = self.obj().layout() else { return };
             let (tw, th) = (texture.width() as f32 * l.scale, texture.height() as f32 * l.scale);
             snapshot.save();
@@ -98,6 +106,9 @@ impl Default for Viewfinder {
 
 impl Viewfinder {
     pub fn set_texture(&self, texture: Option<gdk::Texture>) {
+        if texture.is_some() {
+            self.imp().frozen.replace(None);
+        }
         self.imp().texture.replace(texture);
         self.queue_draw();
     }
@@ -105,6 +116,25 @@ impl Viewfinder {
     pub fn set_cover(&self, cover: bool) {
         self.imp().cover.set(cover);
         self.queue_draw();
+    }
+
+    /// Swap the live picture for a copy of it rendered on the GPU, so the
+    /// camera's buffer goes back and nothing goes black while the camera
+    /// reconfigures. The next frame replaces it. Returns the copy, cropped to
+    /// the picture.
+    pub fn freeze(&self) -> Option<gdk::Texture> {
+        let l = self.layout()?;
+        let renderer = self.native()?.renderer()?;
+        let scale = self.scale_factor() as f32;
+        let snapshot = gtk::Snapshot::new();
+        snapshot.scale(scale, scale);
+        self.imp().snapshot(&snapshot);
+        let viewport = graphene::Rect::new(l.x * scale, l.y * scale, l.width * scale, l.height * scale);
+        let copy = renderer.render_texture(snapshot.to_node()?, Some(&viewport));
+        self.imp().texture.replace(None);
+        self.imp().frozen.replace(Some((copy.clone(), graphene::Rect::new(l.x, l.y, l.width, l.height))));
+        self.queue_draw();
+        Some(copy)
     }
 
     pub fn set_zoom(&self, zoom: f32) {
