@@ -49,10 +49,12 @@ mod imp {
             let scale = if self.cover.get() { (w / uw).max(h / uh) } else { (w / uw).min(h / uh) };
             snapshot.save();
             snapshot.translate(&graphene::Point::new(w / 2.0, h / 2.0));
-            snapshot.rotate(rotation as f32);
+            // Mirror the upright picture, not the sensor image: after a
+            // quarter turn a sensor-space mirror is an upside-down flip.
             if self.mirror.get() {
                 snapshot.scale(-1.0, 1.0);
             }
+            snapshot.rotate(rotation as f32);
             let (dw, dh) = (tw * scale, th * scale);
             snapshot.append_scaled_texture(
                 &texture,

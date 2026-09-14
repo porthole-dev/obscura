@@ -522,7 +522,7 @@ impl Component for App {
                 self.open(index, None);
             }
             Msg::Camera(Event::Opened(session)) => {
-                w.title.set_subtitle(&session.info.model);
+                w.title.set_subtitle(&session.info.name());
                 w.viewfinder.set_rotation(session.info.rotation, session.info.facing == Facing::Front);
                 w.stack.set_visible_child_name("camera");
                 w.capture.set_sensitive(true);

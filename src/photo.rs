@@ -32,14 +32,13 @@ fn gst_format(fourcc: u32) -> Option<&'static str> {
     })
 }
 
-/// EXIF orientation for a sensor that must be turned `rotation` degrees
-/// clockwise to be upright.
-fn orientation(rotation: i32) -> &'static str {
+/// The videoflip method that turns a buffer `rotation` degrees clockwise.
+fn flip_method(rotation: i32) -> &'static str {
     match rotation.rem_euclid(360) {
-        90 => "rotate-90",
+        90 => "clockwise",
         180 => "rotate-180",
-        270 => "rotate-270",
-        _ => "rotate-0",
+        270 => "counterclockwise",
+        _ => "none",
     }
 }
 
@@ -65,7 +64,8 @@ pub fn save_jpeg(still: &Still, path: &Path) -> Result<()> {
     }
 
     let pipeline = gst::parse::launch(&format!(
-        "appsrc name=src ! videoconvert ! jpegenc quality=92 ! jifmux name=mux ! filesink location=\"{}\"",
+        "appsrc name=src ! videoconvert ! videoflip method={} ! jpegenc quality=92 ! jifmux name=mux ! filesink location=\"{}\"",
+        flip_method(still.info.rotation),
         path.display()
     ))?
     .downcast::<gst::Pipeline>()
@@ -88,7 +88,8 @@ pub fn save_jpeg(still: &Still, path: &Path) -> Result<()> {
         let t = tags.get_mut().unwrap();
         t.add::<gst::tags::DeviceModel>(&still.info.model.as_str(), gst::TagMergeMode::Replace);
         t.add::<gst::tags::ApplicationName>(&"Obscura", gst::TagMergeMode::Replace);
-        t.add::<gst::tags::ImageOrientation>(&orientation(still.info.rotation), gst::TagMergeMode::Replace);
+        // The pixels are turned upright above, so every viewer agrees.
+        t.add::<gst::tags::ImageOrientation>(&"rotate-0", gst::TagMergeMode::Replace);
         let now = gst::DateTime::from_g_date_time(relm4::gtk::glib::DateTime::now_local()?);
         t.add::<gst::tags::DateTime>(&now, gst::TagMergeMode::Replace);
         if let Some(us) = still.metadata.get("ExposureTime") {

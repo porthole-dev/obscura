@@ -10,7 +10,7 @@ use std::os::fd::RawFd;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use libcamera::camera::{ActiveCamera, CameraConfiguration, CameraConfigurationStatus};
+use libcamera::camera::{ActiveCamera, CameraConfiguration, CameraConfigurationStatus, Orientation};
 use libcamera::camera_manager::CameraManager;
 use libcamera::control::ControlList;
 use libcamera::control_value::ControlValue;
@@ -39,8 +39,20 @@ pub struct CameraInfo {
     pub id: String,
     pub model: String,
     pub facing: Facing,
-    /// Degrees the image must be rotated clockwise to be upright.
+    /// Degrees the buffers must be turned clockwise to be upright. Known once
+    /// the camera is configured; 0 before.
     pub rotation: i32,
+}
+
+impl CameraInfo {
+    /// What to call the camera in the interface.
+    pub fn name(&self) -> String {
+        match self.facing {
+            Facing::Back => gettextrs::gettext("Back Camera"),
+            Facing::Front => gettextrs::gettext("Front Camera"),
+            Facing::External => self.model.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,14 +239,16 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, emit: impl Fn(Event)) {
                 id: cam.id().to_string(),
                 model: props
                     .get::<properties::Model>()
-                    .map(|m| m.0)
-                    .unwrap_or_else(|_| cam.id().to_string()),
+                    .map(|m| m.0.chars().filter(|c| !c.is_control()).collect::<String>())
+                    .ok()
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or_else(|| cam.id().to_string()),
                 facing: match props.get::<properties::Location>() {
                     Ok(properties::Location::CameraFront) => Facing::Front,
                     Ok(properties::Location::CameraBack) => Facing::Back,
                     _ => Facing::External,
                 },
-                rotation: props.get::<properties::Rotation>().map(|r| r.0).unwrap_or(0),
+                rotation: 0,
             }
         })
         .collect();
@@ -313,7 +327,7 @@ impl Live {
     fn open(
         cam: libcamera::camera::Camera<'static>,
         index: usize,
-        info: CameraInfo,
+        mut info: CameraInfo,
         mode: Option<Mode>,
         tx: &Sender<Internal>,
     ) -> Result<(Self, Session), String> {
@@ -334,6 +348,10 @@ impl Live {
             ),
         };
         cam.configure(&mut cfg).map_err(|e| format!("configure: {e}"))?;
+        // The orientation validate() settled on is what the buffers really
+        // hold: the mounting rotation minus whatever sensor flips could undo.
+        // properties::Rotation alone would double-correct a flipped sensor.
+        info.rotation = upright_rotation(cfg.orientation());
 
         let view_cfg = cfg.get(0).unwrap();
         let view = view_cfg.stream().ok_or("no viewfinder stream")?;
@@ -604,6 +622,19 @@ fn configure(cam: &ActiveCamera, mode: Mode, raw: bool) -> Option<CameraConfigur
     }
 }
 
+/// libcamera orientations name the clockwise turn that produced the buffer
+/// from an upright image; undoing it is the opposite turn.
+// ponytail: mirrored orientations only come back when an app asks for one,
+// and Obscura never does, so the mirror bit is dropped.
+fn upright_rotation(o: Orientation) -> i32 {
+    match o {
+        Orientation::Rotate0 | Orientation::Rotate0Mirror => 0,
+        Orientation::Rotate90 | Orientation::Rotate90Mirror => 270,
+        Orientation::Rotate180 | Orientation::Rotate180Mirror => 180,
+        Orientation::Rotate270 | Orientation::Rotate270Mirror => 90,
+    }
+}
+
 fn frame_duration_range(cam: &ActiveCamera) -> Option<(f64, f64)> {
     let id = id_by_name(cam, "FrameDurationLimits")?;
     let info = cam.controls().find(id).ok()?;
@@ -728,3 +759,17 @@ fn read_metadata(list: &ControlList) -> Metadata {
     Metadata { values }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotation_undoes_the_orientation() {
+        // Pixel 2 XL: Rotation 90, no transpose-capable sensor, so the
+        // buffers are Rotate90 and need a quarter turn counter-clockwise.
+        assert_eq!(upright_rotation(Orientation::Rotate90), 270);
+        assert_eq!(upright_rotation(Orientation::Rotate270), 90);
+        assert_eq!(upright_rotation(Orientation::Rotate0), 0);
+    }
+}
