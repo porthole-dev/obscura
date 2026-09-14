@@ -1,6 +1,6 @@
 project(
   'obscura',
-  version: '0.1.0',
+  version: '0.2.0',
   meson_version: '>= 1.4',
   license: 'GPL-3.0-or-later',
 )
@@ -10,7 +10,7 @@ gnome = import('gnome')
 
 app_id = 'io.github.jertlok.Obscura'
 
-dependency('gtk4', version: '>= 4.18')
+dependency('gtk4', version: '>= 4.20')
 dependency('libadwaita-1', version: '>= 1.8')
 dependency('libcamera', version: '>= 0.7')
 dependency('gstreamer-1.0', version: '>= 1.24')
