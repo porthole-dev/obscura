@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::fd::RawFd;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -180,7 +181,8 @@ pub enum Cmd {
 pub enum Event {
     Cameras(Vec<CameraInfo>),
     Opened(Session),
-    Frame(Frame),
+    /// A new viewfinder frame is waiting in the backend's slot.
+    FrameReady,
     Metadata(Metadata),
     Still(Box<Still>),
     Error(String),
@@ -201,6 +203,30 @@ pub enum Internal {
 
 pub struct LibcameraBackend {
     tx: Sender<Internal>,
+    slot: Arc<FrameSlot>,
+}
+
+/// The newest viewfinder frame, and nothing older: a frame the interface has
+/// not taken by the time the next one completes goes straight back to the
+/// camera, so a busy main thread costs a skipped frame, never latency or
+/// buffers stuck in a queue.
+#[derive(Default)]
+pub struct FrameSlot {
+    frame: std::sync::Mutex<Option<Frame>>,
+    /// Frames replaced before the interface took them.
+    replaced: std::sync::atomic::AtomicU32,
+}
+
+impl FrameSlot {
+    pub fn deliver(&self, frame: Frame, emit: &impl Fn(Event)) {
+        let stale = self.frame.lock().unwrap().replace(frame);
+        match stale {
+            None => emit(Event::FrameReady),
+            Some(_) => {
+                self.replaced.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 impl Backend for LibcameraBackend {
@@ -213,11 +239,22 @@ impl LibcameraBackend {
     pub fn spawn(emit: impl Fn(Event) + Send + 'static) -> Self {
         let (tx, rx) = channel();
         let worker_tx = tx.clone();
+        let slot = Arc::<FrameSlot>::default();
+        let worker_slot = slot.clone();
         std::thread::Builder::new()
             .name("libcamera".into())
-            .spawn(move || run(rx, worker_tx, emit))
+            .spawn(move || run(rx, worker_tx, worker_slot, emit))
             .expect("spawn libcamera thread");
-        Self { tx }
+        Self { tx, slot }
+    }
+
+    pub fn take_frame(&self) -> Option<Frame> {
+        self.slot.frame.lock().unwrap().take()
+    }
+
+    /// Frames skipped since the last call.
+    pub fn take_replaced(&self) -> u32 {
+        self.slot.replaced.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -229,12 +266,13 @@ fn fourcc(code: &[u8; 4]) -> u32 {
     u32::from_le_bytes(*code)
 }
 
-fn run(rx: Receiver<Internal>, tx: Sender<Internal>, emit: impl Fn(Event)) {
+fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit: impl Fn(Event)) {
     let mgr = match CameraManager::new() {
         Ok(mgr) => mgr,
         Err(e) => return emit(Event::Error(format!("libcamera: {e}"))),
     };
     let cameras = mgr.cameras();
+    perf!("camera-manager", "cameras={}", cameras.len());
     let infos: Vec<CameraInfo> = (0..cameras.len())
         .filter_map(|i| cameras.get(i))
         .map(|cam| {
@@ -306,7 +344,7 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, emit: impl Fn(Event)) {
                 }
             }
             Internal::Done(req) => match session.as_mut() {
-                Some(live) => live.completed(req, copy_frames, &tx, &emit),
+                Some(live) => live.completed(req, copy_frames, &tx, &slot, &emit),
                 None => drop(req),
             },
             Internal::Returned(req, generation) => match session.as_mut() {
@@ -328,6 +366,8 @@ struct Live {
     capture_next: bool,
     recorder: Option<std::sync::Arc<crate::video::Recorder>>,
     generation: u64,
+    /// Nothing delivered yet in this session (for timing).
+    first_frame: bool,
     last_meta: Instant,
     outstanding: usize,
     /// The frame AfWindows are expressed in.
@@ -343,6 +383,7 @@ impl Live {
         tx: &Sender<Internal>,
     ) -> Result<(Self, Session), String> {
         let mut cam = cam.acquire().map_err(|e| format!("cannot acquire camera: {e}"))?;
+        perf!("camera-acquired", "camera={index}");
         let modes = sensor_modes(&cam);
         let mode = mode
             .filter(|m| modes.contains(m))
@@ -359,6 +400,7 @@ impl Live {
             ),
         };
         cam.configure(&mut cfg).map_err(|e| format!("configure: {e}"))?;
+        perf!("camera-configured", "{}", cfg.get(0).map(|c| c.to_string_repr()).unwrap_or_default());
         // The orientation validate() settled on is what the buffers really
         // hold: the mounting rotation minus whatever sensor flips could undo.
         // properties::Rotation alone would double-correct a flipped sensor.
@@ -403,6 +445,7 @@ impl Live {
             cam.queue_request(req).map_err(|(_, e)| format!("queue: {e}"))?;
         }
 
+        perf!("camera-started", "requests={outstanding}");
         let controls = describe_controls(&cam);
         let fps = frame_duration_range(&cam);
         let crop_max = cam.properties().get::<properties::ScalerCropMaximum>().ok().map(|r| r.0);
@@ -434,6 +477,7 @@ impl Live {
                     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 },
+                first_frame: true,
                 last_meta: Instant::now(),
                 outstanding,
                 crop_max,
@@ -482,7 +526,7 @@ impl Live {
         }
     }
 
-    fn completed(&mut self, req: Request, copy: bool, tx: &Sender<Internal>, emit: &impl Fn(Event)) {
+    fn completed(&mut self, req: Request, copy: bool, tx: &Sender<Internal>, slot: &FrameSlot, emit: &impl Fn(Event)) {
         use libcamera::request::RequestStatus;
         if req.status() != RequestStatus::Complete {
             self.outstanding -= 1;
@@ -507,11 +551,14 @@ impl Live {
         if let Some(still) = still {
             emit(Event::Still(still));
         }
+        if std::mem::take(&mut self.first_frame) {
+            perf!("frame-first-queued");
+        }
         if copy {
-            emit(Event::Frame(Frame { width, height, stride, fourcc, fd, offset, size, bytes, ret: None }));
+            slot.deliver(Frame { width, height, stride, fourcc, fd, offset, size, bytes, ret: None }, emit);
             return self.requeue(req);
         }
-        emit(Event::Frame(Frame { width, height, stride, fourcc, fd, offset, size, bytes: None, ret: Some((req, tx.clone(), self.generation)) }));
+        slot.deliver(Frame { width, height, stride, fourcc, fd, offset, size, bytes: None, ret: Some((req, tx.clone(), self.generation)) }, emit);
     }
 
     /// Everything a completed request's buffers are needed for, read while
@@ -538,6 +585,7 @@ impl Live {
         }
 
         let still = std::mem::take(&mut self.capture_next).then(|| {
+            let copy_started = Instant::now();
             let raw = self.raw.and_then(|s| {
                 let rb = req.buffer::<Buffer>(&s)?;
                 let c = s.configuration()?;
@@ -553,7 +601,7 @@ impl Live {
                     data: data[..len].to_vec(),
                 })
             });
-            Box::new(Still {
+            let still = Box::new(Still {
                 width,
                 height,
                 stride,
@@ -562,7 +610,9 @@ impl Live {
                 raw,
                 metadata: read_metadata(req.metadata()),
                 info: self.info.info.clone(),
-            })
+            });
+            perf!("still-copied", "ms={:.1} bytes={}", copy_started.elapsed().as_secs_f64() * 1e3, still.rgba.len());
+            still
         });
         Some((fd, offset, size, bytes, still))
     }

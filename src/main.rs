@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#[macro_use]
+mod perf;
 mod app;
 mod camera;
 mod controls;
@@ -49,6 +51,7 @@ viewfinder.viewfinder.switching { opacity: 0; transition: none; }
 ";
 
 fn main() {
+    perf::init();
     env_logger::init();
     // SAFETY: called first thing, before any other thread exists.
     unsafe { gettextrs::setlocale(gettextrs::LocaleCategory::LcAll, "") };
@@ -56,11 +59,10 @@ fn main() {
     let _ = gettextrs::bindtextdomain(GETTEXT_PACKAGE, localedir);
     let _ = gettextrs::bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
     let _ = gettextrs::textdomain(GETTEXT_PACKAGE);
-    gst::init().expect("GStreamer");
-    // Probe encoders now, so the first recording does not wait on it.
-    std::thread::spawn(|| video::encoder());
 
     let app = relm4::RelmApp::new(APP_ID);
+    perf!("gtk-init");
     relm4::set_global_css(CSS);
+    perf!("css");
     app.run::<app::App>(());
 }

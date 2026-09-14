@@ -46,6 +46,55 @@ pub struct App {
     focusing: bool,
     /// The compositor says nobody can see the window: the camera is closed.
     suspended: bool,
+    perf: Option<Rc<std::cell::RefCell<PerfStats>>>,
+    /// The portal said yes (or is not there): cameras may be opened.
+    granted: bool,
+    /// The photo path has been warmed up in the background.
+    warmed: bool,
+}
+
+/// Viewfinder counters for OBSCURA_PERF, shared with the frame clock.
+#[derive(Default)]
+struct PerfStats {
+    delivered: u32,
+    presented: u32,
+    dropped: u32,
+    set_since_paint: u32,
+    main_ns: u64,
+    main_max_ns: u64,
+    since: Option<Instant>,
+    /// What the next presented frame completes: an open, a switch.
+    awaiting: Option<String>,
+    shutter: Option<Instant>,
+}
+
+impl PerfStats {
+    fn painted(&mut self) {
+        if self.set_since_paint == 0 {
+            return;
+        }
+        self.presented += 1;
+        self.dropped += self.set_since_paint - 1;
+        self.set_since_paint = 0;
+        if let Some(what) = self.awaiting.take() {
+            perf!("frame-first-presented", "{what}");
+        }
+        let since = *self.since.get_or_insert_with(Instant::now);
+        let secs = since.elapsed().as_secs_f64();
+        if secs >= 2.0 {
+            perf!(
+                "viewfinder",
+                "delivered_fps={:.1} presented_fps={:.1} dropped={} main_ms_avg={:.2} main_ms_max={:.2} rss_mib={:.0}",
+                self.delivered as f64 / secs,
+                self.presented as f64 / secs,
+                self.dropped,
+                self.main_ns as f64 / self.delivered.max(1) as f64 / 1e6,
+                self.main_max_ns as f64 / 1e6,
+                crate::perf::rss_mib()
+            );
+            *self = PerfStats { awaiting: self.awaiting.take(), shutter: self.shutter, since: Some(Instant::now()), ..Default::default() };
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -70,7 +119,7 @@ pub enum Msg {
     RecordingDone(Result<PathBuf, String>),
     Tick,
     CycleTimer,
-    Grid(bool),
+    PortalSlow,
     TapFocus(f64, f64),
     HideFocus(u32),
     ContinuousFocus,
@@ -114,6 +163,7 @@ pub struct Widgets {
     retry: gtk::Button,
     open_settings: gtk::Button,
     viewfinder: Viewfinder,
+    grid: gtk::DrawingArea,
     focus_layer: gtk::Fixed,
     focus_ring: gtk::Box,
     countdown: gtk::Label,
@@ -187,7 +237,9 @@ fn chip(tooltip: &str, sender: &ComponentSender<App>, rows: &'static [&'static s
 }
 
 fn set_chip(b: &gtk::Button, text: &str, manual: bool) {
-    if let Some(l) = b.child().and_downcast::<gtk::Label>() {
+    if let Some(l) = b.child().and_downcast::<gtk::Label>()
+        && l.label() != text
+    {
         l.set_label(text);
     }
     if manual { b.add_css_class("manual") } else { b.remove_css_class("manual") }
@@ -240,6 +292,10 @@ impl App {
         w.viewfinder.add_css_class("switching");
         w.viewfinder.set_texture(None);
         w.focus_ring.set_visible(false);
+        perf!("camera-open-request", "camera={index}");
+        if let Some(p) = &self.perf {
+            p.borrow_mut().awaiting = Some(format!("camera={index}"));
+        }
         // A still requested from the closing session may never arrive.
         self.saving = false;
         w.saving_spinner.set_visible(false);
@@ -301,6 +357,7 @@ impl App {
         let Some(session) = &self.session else { return };
         if self.video {
             if let Some(recorder) = self.recorder.take() {
+                perf!("record-stop-press");
                 w.capture.set_sensitive(false);
                 if let Some(b) = self.backend() {
                     b.send(Cmd::Record(None));
@@ -310,6 +367,7 @@ impl App {
                     let _ = input.send(Msg::RecordingDone(recorder.stop().map_err(|e| e.to_string())));
                 });
             } else if self.record_started.is_none() {
+                perf!("record-press");
                 w.capture.set_sensitive(false);
                 self.record_started = Some(Instant::now());
                 let (view, fourcc, rotation) = (session.view, session.fourcc, session.info.rotation);
@@ -321,6 +379,10 @@ impl App {
                 });
             }
         } else if !self.saving {
+            perf!("shutter");
+            if let Some(p) = &self.perf {
+                p.borrow_mut().shutter = Some(Instant::now());
+            }
             self.saving = true;
             w.capture.set_sensitive(false);
             w.saving_spinner.set_visible(true);
@@ -392,6 +454,15 @@ impl Component for App {
     }
 
     fn init(_: (), window: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
+        perf!("app-init");
+        // Cameras are enumerated while the portal asks; none is opened
+        // until it answers.
+        let backend = {
+            let input = sender.input_sender().clone();
+            Rc::new(LibcameraBackend::spawn(move |ev| {
+                let _ = input.send(Msg::Camera(ev));
+            }))
+        };
         // Pictures read best against dark surroundings.
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
         let settings = gio::SettingsSchemaSource::default()
@@ -484,6 +555,12 @@ impl Component for App {
             viewfinder.add_controller(hold);
         }
 
+        let grid = viewfinder::grid(&viewfinder);
+        grid_action
+            .bind_property("state", &grid, "visible")
+            .transform_to(|_, v: glib::Variant| v.get::<bool>())
+            .sync_create()
+            .build();
         let focus_ring = gtk::Box::builder().css_classes(["focus-ring"]).width_request(76).height_request(76).visible(false).build();
         let focus_layer = gtk::Fixed::builder().can_target(false).build();
         focus_layer.put(&focus_ring, 0.0, 0.0);
@@ -564,7 +641,11 @@ impl Component for App {
         // Full-width shade, thumb-width controls.
         let bar = adw::Clamp::builder().maximum_size(460).tightening_threshold(460).child(&bar_content).valign(gtk::Align::End).css_classes(["capture-bar"]).build();
 
-        let overlay = gtk::Overlay::builder().child(&viewfinder).build();
+        // Offloaded, the viewfinder's dmabufs can go to the compositor as a
+        // subsurface (even a display plane) instead of through the GPU.
+        let offload = gtk::GraphicsOffload::builder().child(&viewfinder).black_background(true).build();
+        let overlay = gtk::Overlay::builder().child(&offload).build();
+        overlay.add_overlay(&grid);
         overlay.add_overlay(&focus_layer);
         overlay.add_overlay(&countdown);
         overlay.add_overlay(&record_pill);
@@ -779,8 +860,6 @@ impl Component for App {
             timer_button.connect_clicked(move |_| s.input(Msg::CycleTimer));
             let s = sender.clone();
             modes.connect_active_name_notify(move |g| s.input(Msg::SetVideo(g.active_name().as_deref() == Some("video"))));
-            let s = sender.clone();
-            grid_action.connect_notify_local(Some("state"), move |a, _| s.input(Msg::Grid(action_bool(a))));
         }
         {
             let s = sender.clone();
@@ -790,7 +869,10 @@ impl Component for App {
             let s = sender.clone();
             mode_row.connect_selected_notify(move |r| s.input(Msg::SelectModeIndex(r.selected())))
         };
-        viewfinder.set_grid(action_bool(&grid_action));
+        {
+            let s = sender.clone();
+            glib::timeout_add_local_once(Duration::from_millis(600), move || s.input(Msg::PortalSlow));
+        }
 
         sender.oneshot_command(async { CmdOut::Access(portal::request_access().await) });
         {
@@ -805,7 +887,7 @@ impl Component for App {
         let video = settings.as_ref().is_some_and(|s| s.boolean("video"));
         let timer = settings.as_ref().map(|s| s.int("timer").max(0) as u32).unwrap_or(0);
         let model = App {
-            backend: None,
+            backend: Some(backend),
             cameras: Vec::new(),
             camera: 0,
             session: None,
@@ -828,7 +910,27 @@ impl Component for App {
             focus_generation: 0,
             focusing: false,
             suspended: false,
+            perf: crate::perf::on().then(Default::default),
+            granted: false,
+            warmed: false,
         };
+        if let Some(stats) = &model.perf {
+            window.connect_map(|_| perf!("window-mapped"));
+            let stats = stats.clone();
+            let connected = std::cell::Cell::new(false);
+            viewfinder.connect_realize(move |vf| {
+                let stats = stats.clone();
+                let first = std::cell::Cell::new(true);
+                if let Some(clock) = vf.frame_clock().filter(|_| !connected.replace(true)) {
+                    clock.connect_after_paint(move |_| {
+                        if first.replace(false) {
+                            perf!("window-painted");
+                        }
+                        stats.borrow_mut().painted();
+                    });
+                }
+            });
+        }
         let widgets = Widgets {
             window,
             toasts,
@@ -837,6 +939,7 @@ impl Component for App {
             retry,
             open_settings,
             viewfinder,
+            grid,
             focus_layer,
             focus_ring,
             countdown,
@@ -868,12 +971,14 @@ impl Component for App {
         if video {
             widgets.modes.set_active_name(Some("video"));
         }
+        perf!("app-init-done");
         ComponentParts { model, widgets }
     }
 
-    fn update_cmd_with_view(&mut self, w: &mut Self::Widgets, msg: CmdOut, sender: ComponentSender<Self>, _: &Self::Root) {
+    fn update_cmd_with_view(&mut self, w: &mut Self::Widgets, msg: CmdOut, _sender: ComponentSender<Self>, _: &Self::Root) {
         match msg {
             CmdOut::Access(Access::Denied) => {
+                perf!("portal", "denied");
                 self.show_status(
                     w,
                     Some("camera-disabled-symbolic"),
@@ -884,13 +989,15 @@ impl Component for App {
                 w.open_settings.set_visible(true);
             }
             CmdOut::Access(access) => {
+                perf!("portal", "{access:?}");
                 if let Access::Unavailable(why) = &access {
                     log::warn!("camera portal unavailable ({why}); using the cameras directly");
                 }
-                let input = sender.input_sender().clone();
-                self.backend = Some(Rc::new(LibcameraBackend::spawn(move |ev| {
-                    let _ = input.send(Msg::Camera(ev));
-                })));
+                self.granted = true;
+                if !self.cameras.is_empty() {
+                    self.show_status(w, None, &gettext("Starting Camera…"), None, false);
+                    self.reopen(w, self.camera, None);
+                }
             }
         }
     }
@@ -905,9 +1012,16 @@ impl Component for App {
                     glib::timeout_add_local_once(Duration::from_millis(250), move || panel.focus(names));
                 }
             }
+            Msg::PortalSlow => {
+                // The permission dialog is up: say what it is for.
+                if !self.granted && w.stack.visible_child_name().as_deref() == Some("status") && !w.retry.is_visible() {
+                    w.status.set_title(&gettext("Camera Access"));
+                    w.status.set_description(Some(&gettext("Obscura needs your permission to use the camera")));
+                }
+            }
             Msg::Retry => {
                 self.show_status(w, None, &gettext("Starting Camera…"), None, false);
-                if self.backend.is_none() {
+                if !self.granted {
                     sender.oneshot_command(async { CmdOut::Access(portal::request_access().await) });
                 } else {
                     self.reopen(w, self.camera, None);
@@ -937,7 +1051,10 @@ impl Component for App {
                     .unwrap_or(0);
                 w.switch.set_visible(cameras.len() > 1);
                 self.cameras = cameras;
-                self.reopen(w, index, None);
+                self.camera = index;
+                if self.granted {
+                    self.reopen(w, index, None);
+                }
             }
             Msg::Camera(Event::Opened(_)) if self.suspended => {
                 if let Some(b) = self.backend() {
@@ -945,6 +1062,7 @@ impl Component for App {
                 }
             }
             Msg::Camera(Event::Opened(session)) => {
+                perf!("session-opened", "camera={} mode={}x{}", session.camera, session.mode.width, session.mode.height);
                 w.controls_title.set_title(&session.info.name());
                 w.controls_title.set_subtitle(if session.info.facing == Facing::External { "" } else { &session.info.model });
                 w.viewfinder.set_rotation(session.info.rotation, session.info.facing == Facing::Front);
@@ -995,7 +1113,9 @@ impl Component for App {
                 self.camera = session.camera;
                 self.session = Some(session);
             }
-            Msg::Camera(Event::Frame(frame)) => {
+            Msg::Camera(Event::FrameReady) => {
+                let started = self.perf.is_some().then(Instant::now);
+                let Some(frame) = self.backend.as_deref().and_then(|b| b.take_frame()) else { return };
                 let copied = frame.bytes.is_some();
                 match viewfinder::texture(frame) {
                     Ok(texture) => w.viewfinder.set_texture(Some(texture)),
@@ -1009,6 +1129,20 @@ impl Component for App {
                 }
                 if std::mem::take(&mut self.awaiting_frame) {
                     w.viewfinder.remove_css_class("switching");
+                    w.grid.queue_draw();
+                    perf!("frame-first-delivered");
+                    if !std::mem::replace(&mut self.warmed, true) {
+                        std::thread::spawn(crate::photo::warm);
+                    }
+                }
+                if let (Some(p), Some(started)) = (&self.perf, started) {
+                    let mut p = p.borrow_mut();
+                    let ns = started.elapsed().as_nanos() as u64;
+                    p.delivered += 1;
+                    p.dropped += self.backend.as_deref().map_or(0, |b| b.take_replaced());
+                    p.set_since_paint += 1;
+                    p.main_ns += ns;
+                    p.main_max_ns = p.main_max_ns.max(ns);
                 }
                 self.frames += 1;
                 let elapsed = self.fps_since.elapsed().as_secs_f64();
@@ -1020,7 +1154,9 @@ impl Component for App {
             }
             Msg::Camera(Event::Metadata(meta)) => {
                 self.frame_duration = meta.get("FrameDuration");
-                if let Some(p) = &self.panel {
+                if let Some(p) = &self.panel
+                    && w.controls_toggle.is_active()
+                {
                     p.show_metadata(&meta);
                 }
                 self.update_chips(&w.chips, &meta);
@@ -1038,6 +1174,9 @@ impl Component for App {
                 }
             }
             Msg::Camera(Event::Still(still)) => {
+                if let Some(t) = self.perf.as_ref().and_then(|p| p.borrow().shutter) {
+                    perf!("still-received", "since_shutter_ms={:.0}", t.elapsed().as_secs_f64() * 1e3);
+                }
                 let raw = self.raw_enabled();
                 let input = sender.input_sender().clone();
                 std::thread::spawn(move || {
@@ -1123,7 +1262,6 @@ impl Component for App {
                 }
                 self.show_timer(w);
             }
-            Msg::Grid(on) => w.viewfinder.set_grid(on),
             Msg::TapFocus(x, y) => {
                 let (Some(session), Some(panel)) = (&self.session, &self.panel) else { return };
                 let Some(trigger) = session.controls.iter().find(|c| c.name == "AfTrigger") else { return };
@@ -1192,6 +1330,7 @@ impl Component for App {
                 w.capture.set_sensitive(true);
                 match result {
                     Ok(recorder) => {
+                        perf!("recording-started", "encoder={}", recorder.encoder);
                         if let Some(b) = self.backend() {
                             b.send(Cmd::Record(Some(recorder.clone())));
                         }
@@ -1227,6 +1366,7 @@ impl Component for App {
                 self.set_recording_ui(w, false);
                 match result {
                     Ok(path) => {
+                        perf!("recording-saved");
                         self.last_capture = Some(path);
                         w.gallery.set_sensitive(true);
                         let toast = adw::Toast::builder().title(gettext("Video saved")).button_label(gettext("_Open")).action_name("app.open-last").build();
@@ -1239,6 +1379,11 @@ impl Component for App {
                 }
             }
             Msg::SetVideo(video) => {
+                perf!("mode", "video={video}");
+                if video {
+                    // Probe encoders while the camera reopens, not at the first recording.
+                    std::thread::spawn(crate::video::encoder);
+                }
                 self.video = video;
                 if let Some(s) = &self.settings {
                     let _ = s.set_boolean("video", video);
@@ -1277,6 +1422,9 @@ impl Component for App {
                 match result {
                     Ok((path, thumb)) => {
                         self.show_thumbnail(w, path, thumb);
+                        if let Some(t) = self.perf.as_ref().and_then(|p| p.borrow_mut().shutter.take()) {
+                            perf!("thumbnail-shown", "since_shutter_ms={:.0}", t.elapsed().as_secs_f64() * 1e3);
+                        }
                         w.gallery.add_css_class("new");
                         let g = w.gallery.clone();
                         glib::timeout_add_local_once(Duration::from_millis(400), move || g.remove_css_class("new"));

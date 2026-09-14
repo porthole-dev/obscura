@@ -18,7 +18,6 @@ mod imp {
         pub mirror: Cell<bool>,
         /// Fill the widget and crop, instead of fitting inside it.
         pub cover: Cell<bool>,
-        pub grid: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -58,14 +57,6 @@ mod imp {
                 &graphene::Rect::new(-tw / 2.0, -th / 2.0, tw, th),
             );
             snapshot.restore();
-            if self.grid.get() {
-                let colour = gdk::RGBA::new(1.0, 1.0, 1.0, 0.35);
-                for i in 1..3 {
-                    let f = i as f32 / 3.0;
-                    snapshot.append_color(&colour, &graphene::Rect::new(l.x + l.width * f, l.y, 1.0, l.height));
-                    snapshot.append_color(&colour, &graphene::Rect::new(l.x, l.y + l.height * f, l.width, 1.0));
-                }
-            }
         }
     }
 }
@@ -109,11 +100,6 @@ impl Viewfinder {
         self.queue_draw();
     }
 
-    pub fn set_grid(&self, grid: bool) {
-        self.imp().grid.set(grid);
-        self.queue_draw();
-    }
-
     pub fn layout(&self) -> Option<Layout> {
         let texture = self.imp().texture.borrow().clone()?;
         let size = (self.width() as f32, self.height() as f32);
@@ -125,6 +111,30 @@ impl Viewfinder {
     pub fn to_sensor(&self, x: f64, y: f64) -> Option<(f64, f64)> {
         to_sensor(&self.layout()?, self.imp().rotation.get(), self.imp().mirror.get(), x, y)
     }
+}
+
+/// Rule-of-thirds lines over wherever `viewfinder` draws the picture. A
+/// separate widget, so the viewfinder stays a lone texture the compositor
+/// can take as an overlay.
+pub fn grid(viewfinder: &Viewfinder) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::builder().can_target(false).build();
+    let vf = viewfinder.downgrade();
+    area.set_draw_func(move |_, cr, _, _| {
+        let Some(l) = vf.upgrade().and_then(|v| v.layout()) else { return };
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.35);
+        cr.set_line_width(1.0);
+        for i in 1..3 {
+            let f = i as f64 / 3.0;
+            let x = (l.x as f64 + l.width as f64 * f).round() + 0.5;
+            let y = (l.y as f64 + l.height as f64 * f).round() + 0.5;
+            cr.move_to(x, l.y as f64);
+            cr.line_to(x, (l.y + l.height) as f64);
+            cr.move_to(l.x as f64, y);
+            cr.line_to((l.x + l.width) as f64, y);
+        }
+        let _ = cr.stroke();
+    });
+    area
 }
 
 /// Fitted (or, with cover, filled) and centred; with room to spare

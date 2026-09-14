@@ -30,17 +30,29 @@ const CANDIDATES: &[Encoder] = &[
     Encoder { element: "openh264enc", parser: "h264parse", properties: "bitrate=12000000" },
 ];
 
+/// GStreamer is initialised on first use, off the startup path.
+pub fn gst() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        gst::init().expect("GStreamer");
+        perf!("gst-init");
+    });
+}
+
 pub fn encoder() -> Option<&'static Encoder> {
     static PICK: OnceLock<Option<&'static Encoder>> = OnceLock::new();
     *PICK.get_or_init(|| {
-        CANDIDATES.iter().find(|e| {
+        gst();
+        let pick = CANDIDATES.iter().find(|e| {
             if gst::ElementFactory::find(e.element).is_none() {
                 return false;
             }
             let ok = probe(e);
             log::info!("video encoder {}: {}", e.element, if ok { "works" } else { "fails" });
             ok
-        })
+        });
+        perf!("encoder-probed", "{}", pick.map_or("none", |e| e.element));
+        pick
     })
 }
 
@@ -136,6 +148,7 @@ impl std::fmt::Debug for Recorder {
 
 impl Recorder {
     pub fn start(width: u32, height: u32, fourcc: u32, fps: f64, rotation: i32) -> Result<Self> {
+        gst();
         let enc = encoder().context("no working video encoder")?;
         let format = gst_format(fourcc).context("viewfinder format cannot be recorded")?;
         let stem = crate::photo::file_stem().replacen("IMG_", "VID_", 1);

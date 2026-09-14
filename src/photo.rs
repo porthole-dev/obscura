@@ -49,7 +49,22 @@ unsafe extern "C" {
     fn gst_tag_register_musicbrainz_tags();
 }
 
+/// Load the JPEG path's plugins and run it once on a tiny frame, so the
+/// first real photo does not pay for it. Call from a worker.
+pub fn warm() {
+    crate::video::gst();
+    // SAFETY: idempotent (GOnce inside) and thread-safe.
+    unsafe { gst_tag_register_musicbrainz_tags() };
+    let Ok(p) = gst::parse::launch("videotestsrc num-buffers=1 ! video/x-raw,width=16,height=16 ! videoconvert ! videoflip method=clockwise ! jpegenc ! jifmux ! fakesink") else { return };
+    if p.set_state(gst::State::Playing).is_ok() {
+        let _ = p.bus().map(|b| b.timed_pop_filtered(gst::ClockTime::from_seconds(10), &[gst::MessageType::Eos, gst::MessageType::Error]));
+    }
+    let _ = p.set_state(gst::State::Null);
+    perf!("photo-path-warm");
+}
+
 pub fn save_jpeg(still: &Still, path: &Path) -> Result<()> {
+    crate::video::gst();
     // SAFETY: idempotent (GOnce inside) and thread-safe.
     unsafe { gst_tag_register_musicbrainz_tags() };
     let format = gst_format(still.fourcc).context("viewfinder format has no JPEG path")?;
@@ -125,8 +140,10 @@ pub fn save(still: &Still, raw: bool) -> Result<PathBuf> {
     let stem = file_stem();
     let jpeg = dir.join(format!("{stem}.jpg"));
     save_jpeg(still, &jpeg)?;
+    perf!("photo-jpeg-written");
     if raw && let Some(image) = &still.raw {
         crate::dng::write(image, still, &dir.join(format!("{stem}.dng")))?;
+        perf!("photo-dng-written");
     }
     Ok(jpeg)
 }
