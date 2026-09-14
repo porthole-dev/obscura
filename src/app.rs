@@ -53,6 +53,7 @@ pub struct App {
     warmed: bool,
     /// Open the last capture as soon as it is written.
     open_pending: bool,
+    video_mode_label: String,
     /// The camera is switching to its photo mode for a shot: hold the frozen
     /// viewfinder until the photo is taken.
     awaiting_still: bool,
@@ -150,6 +151,8 @@ pub enum Msg {
     ZoomBegin,
     Pinch(f64),
     CycleZoom,
+    CycleFrameRate,
+    ShowInFiles,
     Preferences,
 }
 
@@ -242,6 +245,26 @@ fn mode_label(m: &Mode) -> String {
     format!("{} · {} · {} × {}", aspect(m), megapixels(m), m.width, m.height)
 }
 
+/// "1080p 60": size and rate, as phone cameras put it.
+fn video_label(size: &str, fps: Option<f64>) -> String {
+    match fps {
+        Some(f) => format!("{size} {f:.0}"),
+        None => size.to_string(),
+    }
+}
+
+/// The next frame rate for the chip: through 30, 60, 120 and 240 where the
+/// mode has them, then back to the slowest.
+fn next_frame_rate(rates: &[f64], current: Option<f64>) -> Option<f64> {
+    let mut cycle: Vec<f64> = rates.iter().copied().filter(|r| [30.0, 60.0, 120.0, 240.0].iter().any(|s| (s - r).abs() < 0.5)).collect();
+    if cycle.is_empty() {
+        cycle = rates.to_vec();
+    }
+    cycle.sort_by(f64::total_cmp);
+    let now = current.unwrap_or(0.0);
+    cycle.iter().copied().find(|r| *r > now + 0.5).or(cycle.first().copied())
+}
+
 /// "4K", "1080p": what a recording at this sensor mode is called.
 fn video_name(m: &Mode) -> String {
     match m.width {
@@ -270,11 +293,16 @@ fn icon_button(icon: &str, tooltip: &str, classes: &[&str]) -> gtk::Button {
 /// A value over the viewfinder. `chars` fits its widest value, so a changing
 /// number never moves its neighbours.
 fn chip(tooltip: &str, sender: &ComponentSender<App>, rows: &'static [&'static str], chars: i32) -> gtk::Button {
+    let b = chip_button(tooltip, chars);
+    let s = sender.clone();
+    b.connect_clicked(move |_| s.input(Msg::ShowControl(rows)));
+    b
+}
+
+fn chip_button(tooltip: &str, chars: i32) -> gtk::Button {
     let text = gtk::Label::builder().width_chars(chars).max_width_chars(chars).css_classes(["numeric"]).build();
     let b = gtk::Button::builder().child(&text).tooltip_text(tooltip).css_classes(["chip"]).visible(false).build();
     label(&b, tooltip);
-    let s = sender.clone();
-    b.connect_clicked(move |_| s.input(Msg::ShowControl(rows)));
     b
 }
 
@@ -407,7 +435,10 @@ impl App {
             _ if panel.is("AfMode", "Auto") => set_chip(&c.focus, &gettext("AF-S"), true),
             _ => set_chip(&c.focus, &gettext("AF"), false),
         }
-        set_chip(&c.fps, &format!("{:.0} fps", self.fps), false);
+        match panel.frame_rate() {
+            Some(rate) => set_chip(&c.fps, &format!("{rate:.0} fps"), true),
+            None => set_chip(&c.fps, &format!("{:.0} fps", self.fps), false),
+        }
     }
 
     /// Press the shutter for real: a photo, or start/stop a recording.
@@ -417,6 +448,8 @@ impl App {
             if let Some(recorder) = self.recorder.take() {
                 perf!("record-stop-press");
                 self.feedback();
+                self.set_recording_ui(w, false);
+                w.saving_spinner.set_visible(true);
                 w.capture.set_sensitive(false);
                 if let Some(b) = self.backend() {
                     b.send(Cmd::Record(None));
@@ -427,6 +460,10 @@ impl App {
                 });
             } else if self.record_started.is_none() {
                 perf!("record-press");
+                // The indicator answers the press at once; a failed start
+                // takes it back.
+                w.record_time.set_label("0:00");
+                self.set_recording_ui(w, true);
                 w.capture.set_sensitive(false);
                 self.record_started = Some(Instant::now());
                 let rotation = crate::device::upright(session.info.rotation, session.info.facing == Facing::Front, self.device);
@@ -612,6 +649,7 @@ impl Component for App {
         section.append(Some(&gettext("Show Capture _Info")), Some("app.show-info"));
         menu.append_section(None, &section);
         let section = gio::Menu::new();
+        section.append(Some(&gettext("Show Last Capture in _Files")), Some("app.show-in-files"));
         section.append(Some(&gettext("_Preferences")), Some("app.preferences"));
         section.append(Some(&gettext("_Keyboard Shortcuts")), Some("app.shortcuts"));
         section.append(Some(&gettext("_About Obscura")), Some("app.about"));
@@ -726,7 +764,13 @@ impl Component for App {
             ev: chip(&gettext("Exposure Compensation"), &sender, &["ExposureValue"], 4),
             wb: chip(&gettext("White Balance"), &sender, &["AwbMode", "AwbEnable", "ColourTemperature"], 5),
             focus: chip(&gettext("Focus"), &sender, &["AfMode", "LensPosition"], 7),
-            fps: chip(&gettext("Frame Rate"), &sender, &["FrameDurationLimits"], 6),
+            fps: {
+                let b = chip_button(&gettext("Frame Rate"), 6);
+                // In video mode the chip picks the next rate the mode offers.
+                let s = sender.clone();
+                b.connect_clicked(move |_| s.input(Msg::CycleFrameRate));
+                b
+            },
         };
         let strip = gtk::Box::builder().spacing(4).halign(gtk::Align::Center).build();
         for c in [&chips.zoom, &chips.iso, &chips.shutter, &chips.ev, &chips.wb, &chips.focus, &chips.fps] {
@@ -948,6 +992,12 @@ impl Component for App {
                     .version(env!("CARGO_PKG_VERSION"))
                     .license_type(gtk::License::Gpl30)
                     .comments(gettext("Take pictures and videos, with every control your camera has"))
+                    .website("https://github.com/Jertlok/obscura")
+                    .issue_url("https://github.com/Jertlok/obscura/issues")
+                    .developers(["Giuseppe Maggio"])
+                    .copyright("© 2026 Giuseppe Maggio")
+                    // Translators: your names, one per line.
+                    .translator_credits(gettext("translator-credits"))
                     .build()
                     .present(Some(&window));
             });
@@ -970,6 +1020,8 @@ impl Component for App {
                     (gettext("Show Capture Info"), "app.show-info"),
                     (gettext("Open Last Capture"), "app.open-last"),
                     (gettext("Zoom"), "app.zoom"),
+                    (gettext("Frame Rate"), "app.frame-rate"),
+                    (gettext("Show Last Capture in Files"), "app.show-in-files"),
                     (gettext("Preferences"), "app.preferences"),
                     (gettext("Keyboard Shortcuts"), "app.shortcuts"),
                     (gettext("Quit"), "app.quit"),
@@ -1015,6 +1067,8 @@ impl Component for App {
             ("switch-camera", &["<Ctrl>Tab"][..], || Msg::SwitchCamera),
             ("open-last", &["<Ctrl>o"][..], || Msg::OpenLast),
             ("timer", &["<Ctrl>t"][..], || Msg::CycleTimer),
+            ("frame-rate", &["<Ctrl>r"][..], || Msg::CycleFrameRate),
+            ("show-in-files", &["<Ctrl><Shift>o"][..], || Msg::ShowInFiles),
             ("zoom", &["<Ctrl>plus"][..], || Msg::CycleZoom),
             ("preferences", &["<Ctrl>comma"][..], || Msg::Preferences),
         ] {
@@ -1116,6 +1170,7 @@ impl Component for App {
             granted: false,
             warmed: false,
             open_pending: false,
+            video_mode_label: String::new(),
             awaiting_still: false,
             last_meta: Metadata::default(),
             locked: false,
@@ -1308,6 +1363,7 @@ impl Component for App {
                 }
                 w.resolution.set_menu_model(Some(&menu));
                 w.resolution.set_label(&if self.video { video_name(&session.mode) } else { aspect(&session.mode) });
+                self.video_mode_label = video_name(&session.mode);
                 w.resolution.set_tooltip_text(Some(&format!("{} ({})", gettext("Resolution"), mode_label(&session.mode))));
                 w.resolution_action.set_state(&format!("{}x{}", session.mode.width, session.mode.height).to_variant());
 
@@ -1332,6 +1388,14 @@ impl Component for App {
                 c.focus.set_visible(has(&["AfMode", "LensPosition"]));
                 // Frame rate is a video decision; photos leave it to exposure.
                 c.fps.set_visible(self.video && has(&["FrameDurationLimits"]));
+                if self.video {
+                    // 1080p and below at 60 where the mode allows it, bigger at 30.
+                    let rates = panel.frame_rates();
+                    let want = if session.mode.width <= 2100 { 60.0 } else { 30.0 };
+                    let rate = rates.iter().copied().filter(|r| *r <= want + 0.5).fold(None, |best: Option<f64>, r| Some(best.map_or(r, |b| b.max(r))));
+                    panel.set_frame_rate(rate);
+                    w.resolution.set_label(&video_label(&video_name(&session.mode), panel.frame_rate()));
+                }
                 self.panel = Some(panel);
                 self.remember(&session);
                 self.camera = session.camera;
@@ -1584,6 +1648,19 @@ impl Component for App {
             }
             Msg::ZoomBegin => self.zoom_start = self.zoom,
             Msg::Pinch(scale) => self.set_zoom(w, self.zoom_start * scale),
+            Msg::ShowInFiles => {
+                if let Some(path) = &self.last_capture {
+                    gtk::FileLauncher::new(Some(&gio::File::for_path(path))).open_containing_folder(Some(&w.window), None::<&gio::Cancellable>, |_| {});
+                }
+            }
+            Msg::CycleFrameRate => {
+                if let Some(panel) = self.panel.as_ref().filter(|_| self.video) {
+                    let next = next_frame_rate(panel.frame_rates(), panel.frame_rate());
+                    panel.set_frame_rate(next);
+                    w.resolution.set_label(&video_label(&self.video_mode_label, panel.frame_rate()));
+                    perf!("frame-rate", "{next:?}");
+                }
+            }
             Msg::CycleZoom => {
                 let next = if self.zoom < 1.99 { 2.0 } else if self.zoom < 3.99 { 4.0 } else { 1.0 };
                 self.set_zoom(w, next);
@@ -1616,6 +1693,7 @@ impl Component for App {
                     Err(e) => {
                         log::warn!("recording did not start: {e}");
                         self.record_started = None;
+                        self.set_recording_ui(w, false);
                         w.toasts.add_toast(adw::Toast::new(&gettext("Could not start recording")));
                     }
                 }
@@ -1632,6 +1710,7 @@ impl Component for App {
                     source.remove();
                 }
                 w.capture.set_sensitive(true);
+                w.saving_spinner.set_visible(false);
                 self.set_recording_ui(w, false);
                 match result {
                     Ok(path) => {
@@ -1924,6 +2003,16 @@ mod tests {
         assert_eq!(yuv_to_rgb(16, 128, 128), [0, 0, 0]);
         let red = yuv_to_rgb(81, 90, 240);
         assert!(red[0] > 240 && red[1] < 20 && red[2] < 20, "{red:?}");
+    }
+
+    #[test]
+    fn frame_rate_chip_cycles_what_the_mode_offers() {
+        let rates = [120.0, 60.0, 30.0, 24.0, 15.0];
+        assert_eq!(next_frame_rate(&rates, Some(30.0)), Some(60.0));
+        assert_eq!(next_frame_rate(&rates, Some(120.0)), Some(30.0));
+        assert_eq!(next_frame_rate(&rates, None), Some(30.0));
+        assert_eq!(next_frame_rate(&[25.0], Some(25.0)), Some(25.0));
+        assert_eq!(video_label("1080p", Some(60.0)), "1080p 60");
     }
 
     #[test]

@@ -5,6 +5,8 @@
 //! next to the libcamera one without the UI knowing which it has.
 
 use std::collections::HashMap;
+
+use gettextrs::gettext;
 use std::ffi::CStr;
 use std::os::fd::RawFd;
 use std::sync::Arc;
@@ -49,8 +51,8 @@ impl CameraInfo {
     /// What to call the camera in the interface.
     pub fn name(&self) -> String {
         match self.facing {
-            Facing::Back => gettextrs::gettext("Back Camera"),
-            Facing::Front => gettextrs::gettext("Front Camera"),
+            Facing::Back => gettext("Back Camera"),
+            Facing::Front => gettext("Front Camera"),
             Facing::External => self.model.clone(),
         }
     }

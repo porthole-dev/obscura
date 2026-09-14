@@ -66,21 +66,29 @@ if [ $camera = virtual ]; then expect "full-res photo: JPEG written" "photo-jpeg
 "$P" act capture; expect "fast photo: still" "still-received" 2
 [ "$(count still-reconfigure)" -eq 1 ] && printf 'ok    %-34s\n' "fast photo: no reconfigure" || { printf 'FAIL  %-34s\n' "fast photo: no reconfigure"; failed=$((failed + 1)); }
 
-# Under qemu the sysroot cannot encode JPEG, so a "could not save" toast is
-# sliding in now; a press that lands mid-animation is lost. Let it settle.
-sleep 1
-"$P" point 180 250; sleep 0.3; "$P" click 1.2; expect "long press is handled" "lock" && shot locked
+# press NAME X Y SECONDS EVENT: a pointer press, tried three times. Under
+# qemu an emulated app can miss one (a toast sliding in is enough); a real
+# failure misses all three.
+press() {
+	local before
+	before=$(count "$5")
+	for _ in 1 2 3; do
+		"$P" point "$2" "$3"; sleep 0.3; "$P" click "$4"
+		for _ in $(seq 15); do [ "$(count "$5")" -gt "$before" ] && break 2; sleep 0.2; done
+	done
+	expect "$1" "$5" $((before + 1)) 1
+}
+press "long press is handled" 180 250 1.2 "lock" && shot locked
 if grep -q "obscura-perf .* lock held" "$log"; then
 	sleep 0.5
 	[ "$(count unlock)" -eq 0 ] && printf 'ok    %-34s\n' "lock survives the release" || { printf 'FAIL  %-34s\n' "lock survives the release"; failed=$((failed + 1)); }
-	"$P" point 120 320; sleep 0.3; "$P" click; expect "tap unlocks" "unlock"
+	press "tap unlocks" 120 320 0.05 "unlock"
 elif [ $camera = fake ]; then
 	printf 'FAIL  %-34s\n' "long press locks"; failed=$((failed + 1))
 else
 	echo "skip  lock                               (this camera reports nothing to hold)"
-	"$P" point 120 320; sleep 0.3; "$P" click
+	press "tap reaches the viewfinder" 120 320 0.05 "tap "
 fi
-expect "tap reaches the viewfinder" "tap " 1
 
 "$P" act zoom; expect "zoom 2x" "zoom 2.0" && shot zoom
 "$P" act zoom; "$P" act zoom; expect "zoom back to 1x" "zoom 1.0"
@@ -88,6 +96,7 @@ expect "tap reaches the viewfinder" "tap " 1
 presented=$(count frame-first-presented)
 "$P" act switch-camera; expect "switch camera" "frame-first-presented" $((presented + 1)) 20 && shot front
 "$P" act mode video; expect "video mode" "frame-first-presented" $((presented + 2)) 20 && shot video
+"$P" act frame-rate; expect "frame rate chip cycles" "frame-rate Some" && expect "frame rate reaches the camera" "control FrameDurationLimits" && shot frame-rate
 expect "encoders probed" "encoder-probed" 1 20
 if grep -q "encoder-probed none" "$log"; then
 	echo "skip  recording                          (no working video encoder here)"

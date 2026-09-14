@@ -1,0 +1,621 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-15 00:16+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: src/app.rs:429
+msgid "AWB"
+msgstr ""
+
+#: src/app.rs:432
+msgid "AF-L"
+msgstr ""
+
+#: src/app.rs:435
+msgid "AF-S"
+msgstr ""
+
+#: src/app.rs:436
+msgid "AF"
+msgstr ""
+
+#: src/app.rs:497
+msgid "Photo taken"
+msgstr ""
+
+#: src/app.rs:497 src/app.rs:1720
+msgid "_Open"
+msgstr ""
+
+#: src/app.rs:523
+msgid "Stop Recording"
+msgstr ""
+
+#: src/app.rs:523 src/app.rs:1742
+msgid "Start Recording"
+msgstr ""
+
+#: src/app.rs:533
+msgid "Self-Timer: Off"
+msgstr ""
+
+#: src/app.rs:534
+#, rust-format
+msgid "Self-Timer: {} Seconds"
+msgstr ""
+
+#: src/app.rs:586 src/app.rs:989 data/io.github.jertlok.Obscura.desktop.in:2
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:7
+msgid "Obscura"
+msgstr ""
+
+#: src/app.rs:641 src/app.rs:876 src/app.rs:1367
+msgid "Resolution"
+msgstr ""
+
+#: src/app.rs:644 src/app.rs:645 src/app.rs:901 src/app.rs:1017
+msgid "Camera Controls"
+msgstr ""
+
+#: src/app.rs:649
+msgid "Show Capture _Info"
+msgstr ""
+
+#: src/app.rs:652
+msgid "Show Last Capture in _Files"
+msgstr ""
+
+#: src/app.rs:653
+msgid "_Preferences"
+msgstr ""
+
+#: src/app.rs:654
+msgid "_Keyboard Shortcuts"
+msgstr ""
+
+#: src/app.rs:655
+msgid "_About Obscura"
+msgstr ""
+
+#: src/app.rs:657 src/app.rs:658
+msgid "Main Menu"
+msgstr ""
+
+#: src/app.rs:670 src/app.rs:1925
+msgid "Viewfinder"
+msgstr ""
+
+#: src/app.rs:738 src/app.rs:764 src/controls.rs:70
+msgid "Exposure Compensation"
+msgstr ""
+
+#: src/app.rs:756 src/app.rs:757 src/app.rs:1022
+msgid "Zoom"
+msgstr ""
+
+#: src/app.rs:762 src/controls.rs:72
+msgid "ISO"
+msgstr ""
+
+#: src/app.rs:763 src/controls.rs:74
+msgid "Shutter Speed"
+msgstr ""
+
+#: src/app.rs:765 src/controls.rs:200
+msgid "White Balance"
+msgstr ""
+
+#: src/app.rs:766 src/controls.rs:199
+msgid "Focus"
+msgstr ""
+
+#: src/app.rs:768 src/app.rs:1023 src/controls.rs:81
+msgid "Frame Rate"
+msgstr ""
+
+#: src/app.rs:792 src/app.rs:798 src/app.rs:904 src/app.rs:1742
+msgid "Take Photo"
+msgstr ""
+
+#: src/app.rs:799 src/app.rs:1016
+msgid "Switch Camera"
+msgstr ""
+
+#: src/app.rs:813 src/app.rs:819 src/app.rs:1021
+msgid "Open Last Capture"
+msgstr ""
+
+#: src/app.rs:822
+msgid "Photo"
+msgstr ""
+
+#: src/app.rs:823
+msgid "Video"
+msgstr ""
+
+#: src/app.rs:861
+msgid "_Try Again"
+msgstr ""
+
+#: src/app.rs:862
+msgid "Open _Settings"
+msgstr ""
+
+#: src/app.rs:866 src/app.rs:1275 src/app.rs:1300
+msgid "Starting Camera…"
+msgstr ""
+
+#: src/app.rs:877 src/app.rs:1924 data/io.github.jertlok.Obscura.gschema.xml:28
+msgid "Save RAW"
+msgstr ""
+
+#: src/app.rs:877
+msgid "Also write a DNG next to each photo"
+msgstr ""
+
+#: src/app.rs:881 src/app.rs:1921
+msgid "Capture"
+msgstr ""
+
+#: src/app.rs:994
+msgid "Take pictures and videos, with every control your camera has"
+msgstr ""
+
+#. Translators: your names, one per line.
+#: src/app.rs:1000
+msgid "translator-credits"
+msgstr ""
+
+#: src/app.rs:1013
+msgid "Take Photo or Record"
+msgstr ""
+
+#: src/app.rs:1014
+msgid "Photo Mode"
+msgstr ""
+
+#: src/app.rs:1015
+msgid "Video Mode"
+msgstr ""
+
+#: src/app.rs:1018 src/app.rs:1926
+#: data/io.github.jertlok.Obscura.gschema.xml:53
+msgid "Grid"
+msgstr ""
+
+#: src/app.rs:1019
+msgid "Self-Timer"
+msgstr ""
+
+#: src/app.rs:1020
+msgid "Show Capture Info"
+msgstr ""
+
+#: src/app.rs:1024
+msgid "Show Last Capture in Files"
+msgstr ""
+
+#: src/app.rs:1025 src/app.rs:1931
+msgid "Preferences"
+msgstr ""
+
+#: src/app.rs:1026
+msgid "Keyboard Shortcuts"
+msgstr ""
+
+#: src/app.rs:1027
+msgid "Quit"
+msgstr ""
+
+#: src/app.rs:1262
+msgid "No Camera Access"
+msgstr ""
+
+#: src/app.rs:1263
+msgid ""
+"Allow Obscura to use the camera in Settings › Privacy › Camera, then try "
+"again."
+msgstr ""
+
+#: src/app.rs:1295
+msgid "Camera Access"
+msgstr ""
+
+#: src/app.rs:1296
+msgid "Obscura needs your permission to use the camera"
+msgstr ""
+
+#: src/app.rs:1311
+msgid "Could not open Settings"
+msgstr ""
+
+#: src/app.rs:1319
+msgid "No Camera Found"
+msgstr ""
+
+#: src/app.rs:1320
+msgid "Connect a camera to take pictures and videos."
+msgstr ""
+
+#: src/app.rs:1496
+msgid "Camera Busy"
+msgstr ""
+
+#: src/app.rs:1496
+msgid "Another app is using this camera. Close it, then try again."
+msgstr ""
+
+#: src/app.rs:1498
+msgid "Camera Unavailable"
+msgstr ""
+
+#: src/app.rs:1697
+msgid "Could not start recording"
+msgstr ""
+
+#: src/app.rs:1720
+msgid "Video saved"
+msgstr ""
+
+#: src/app.rs:1725
+msgid "Could not save the video"
+msgstr ""
+
+#: src/app.rs:1792
+msgid "Could not save the photo"
+msgstr ""
+
+#: src/app.rs:1841
+msgid "LOCK"
+msgstr ""
+
+#: src/app.rs:1922
+msgid "Shutter Sound"
+msgstr ""
+
+#: src/app.rs:1922
+msgid ""
+"Play a sound or vibrate when taking pictures, as the device's feedback "
+"settings allow"
+msgstr ""
+
+#: src/app.rs:1923
+msgid "Full-Resolution Photos"
+msgstr ""
+
+#: src/app.rs:1923
+msgid ""
+"The camera switches to its full photo size for a moment; turn off for photos "
+"straight from the viewfinder, with no wait"
+msgstr ""
+
+#: src/app.rs:1924
+msgid "Also write a DNG next to each photo, on cameras that provide raw images"
+msgstr ""
+
+#: src/app.rs:1926
+msgid "Rule-of-thirds lines to help composition"
+msgstr ""
+
+#: src/app.rs:1927
+msgid "Capture Info"
+msgstr ""
+
+#: src/app.rs:1927
+msgid "ISO, shutter speed, white balance and focus over the picture"
+msgstr ""
+
+#: src/camera.rs:54
+msgid "Back Camera"
+msgstr ""
+
+#: src/camera.rs:55
+msgid "Front Camera"
+msgstr ""
+
+#: src/controls.rs:69
+msgid "Automatic Exposure"
+msgstr ""
+
+#: src/controls.rs:71
+msgid "ISO Mode"
+msgstr ""
+
+#: src/controls.rs:73
+msgid "Shutter Speed Mode"
+msgstr ""
+
+#: src/controls.rs:75
+msgid "Digital Gain"
+msgstr ""
+
+#: src/controls.rs:76
+msgid "Exposure Program"
+msgstr ""
+
+#: src/controls.rs:77
+msgid "Exposure Priority"
+msgstr ""
+
+#: src/controls.rs:78
+msgid "Metering"
+msgstr ""
+
+#: src/controls.rs:79
+msgid "Flicker Reduction"
+msgstr ""
+
+#: src/controls.rs:80
+msgid "Flicker Period"
+msgstr ""
+
+#: src/controls.rs:82
+msgid "Focus Mode"
+msgstr ""
+
+#: src/controls.rs:83
+msgid "Focus Distance"
+msgstr ""
+
+#: src/controls.rs:84
+msgid "Focus Range"
+msgstr ""
+
+#: src/controls.rs:85
+msgid "Focus Speed"
+msgstr ""
+
+#: src/controls.rs:86
+msgid "Automatic White Balance"
+msgstr ""
+
+#: src/controls.rs:87
+msgid "Preset"
+msgstr ""
+
+#: src/controls.rs:88
+msgid "Colour Temperature"
+msgstr ""
+
+#: src/controls.rs:89
+msgid "Colour Gains"
+msgstr ""
+
+#: src/controls.rs:90
+msgid "Brightness"
+msgstr ""
+
+#: src/controls.rs:91
+msgid "Contrast"
+msgstr ""
+
+#: src/controls.rs:92
+msgid "Saturation"
+msgstr ""
+
+#: src/controls.rs:93
+msgid "Sharpness"
+msgstr ""
+
+#: src/controls.rs:94
+msgid "Gamma"
+msgstr ""
+
+#: src/controls.rs:95
+msgid "Noise Reduction"
+msgstr ""
+
+#: src/controls.rs:96
+msgid "HDR"
+msgstr ""
+
+#: src/controls.rs:198
+msgid "Exposure"
+msgstr ""
+
+#: src/controls.rs:201
+msgid "Image"
+msgstr ""
+
+#: src/controls.rs:202
+msgid "Other"
+msgstr ""
+
+#: src/controls.rs:281
+msgid "Red"
+msgstr ""
+
+#: src/controls.rs:282
+msgid "Blue"
+msgstr ""
+
+#: src/controls.rs:329 src/controls.rs:333
+msgid "Reset to Automatic"
+msgstr ""
+
+#: src/controls.rs:383
+msgid "Automatic"
+msgstr ""
+
+#: src/controls.rs:486
+msgid "Auto"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.desktop.in:3
+msgid "Camera"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.desktop.in:4
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:8
+msgid "Take photos and videos with every control your camera has"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.desktop.in:6
+msgid "camera;photo;picture;video;webcam;raw;dng;manual;exposure;focus;"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:10
+msgid ""
+"Obscura is a camera app for phones and computers that talks to libcamera "
+"directly, so it can offer whatever the camera itself can do."
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:15
+msgid ""
+"Controls generated from what the camera reports: exposure time, sensitivity, "
+"exposure compensation, white balance, focus, frame rate and more"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:16
+msgid ""
+"Every sensor mode the camera offers, from full resolution to high frame rate "
+"binned modes"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:17
+msgid "RAW photos as DNG alongside JPEG"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:18
+msgid "Live readout of exposure, sensitivity, colour temperature and focus"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:22
+msgid "Giuseppe Maggio"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:29
+msgid "The viewfinder, with exposure and focus at a glance"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:33
+msgid "Every control the camera has"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:37
+msgid "Video, with resolution and frame rate"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:54
+msgid "A redesigned camera for phones and desktops."
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:56
+msgid "Pictures come out upright, including landscape shots on phones"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:57
+msgid ""
+"Current exposure, white balance and focus over the viewfinder, one tap from "
+"their controls"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:58
+msgid "Tap to focus, digital zoom, grid, self-timer, and shutter feedback"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:59
+msgid "Controls in a sidebar or a bottom sheet, following the window size"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.metainfo.xml.in:60
+msgid "Faster start and a viewfinder that never falls behind"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:6
+msgid "Window width"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:10
+msgid "Window height"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:14
+msgid "Window maximized"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:18
+msgid "Last used camera"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:19
+msgid "The libcamera id of the camera opened last."
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:23
+msgid "Sensor mode per camera"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:24
+msgid "Maps a camera id to the last chosen sensor mode, as WIDTHxHEIGHT."
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:29
+msgid "Write a DNG next to each photo when the camera offers a raw stream."
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:33
+msgid "Show capture info"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:34
+msgid ""
+"Show exposure, sensitivity, white balance, focus and frame rate over the "
+"viewfinder."
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:38
+msgid "Full-resolution photos"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:39
+msgid ""
+"Take photos at the full photo size, switching the camera from its faster "
+"viewfinder mode for a moment; when off, photos come straight from the "
+"viewfinder."
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:43
+msgid "Shutter sound"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:44
+msgid ""
+"Play the feedback theme's shutter sound or vibration when taking a picture "
+"or starting and stopping a recording."
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:48
+msgid "Video mode"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:49
+msgid "Whether the shutter records video rather than taking photos."
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:54
+msgid "Draw a rule-of-thirds grid over the viewfinder."
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:59
+msgid "Self-timer"
+msgstr ""
+
+#: data/io.github.jertlok.Obscura.gschema.xml:60
+msgid ""
+"Seconds between pressing the shutter and taking the picture; 0 for none."
+msgstr ""

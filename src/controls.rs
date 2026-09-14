@@ -169,6 +169,8 @@ pub struct Panel {
     enums: HashMap<String, Vec<(i32, String)>>,
     /// Move a single-value slider, as if dragged.
     setters: HashMap<String, Rc<dyn Fn(f64)>>,
+    /// The frame rate row and its rates, fastest first.
+    fps: Option<(adw::ComboRow, Vec<f64>)>,
     /// Rows lent to the app's Capture group, taken back on drop.
     capture: (adw::PreferencesGroup, Vec<gtk::Widget>),
 }
@@ -213,6 +215,7 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, capture: &adw::P
     let mut resets: HashMap<Group, Vec<Reset>> = HashMap::new();
     let mut lent = Vec::new();
     let mut setters = HashMap::new();
+    let mut fps_rates = None;
     // Set once every row exists, so a change can re-evaluate dependencies.
     let panel_cell: Rc<RefCell<Option<std::rc::Weak<Panel>>>> = Rc::default();
 
@@ -237,7 +240,9 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, capture: &adw::P
 
         let row: Option<(gtk::Widget, Reset)> = match (c.kind, c.name.as_str()) {
             (_, "FrameDurationLimits") => fps.map(|(lo, hi)| {
-                let row = fps_row(&title, lo, hi, c, emit);
+                let rates = frame_rates(lo, hi);
+                let row = fps_row(&title, rates.clone(), c, emit);
+                fps_rates = Some((row.clone(), rates));
                 let r = row.clone();
                 (row.upcast(), Rc::new(move || r.set_selected(0)) as Reset)
             }),
@@ -330,7 +335,7 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, capture: &adw::P
         prefs[&group].set_header_suffix(Some(&button));
     }
 
-    let panel = Rc::new(Panel { widget, rows, values, subtitles, enums, setters, capture: (capture.clone(), lent) });
+    let panel = Rc::new(Panel { widget, rows, values, subtitles, enums, setters, fps: fps_rates, capture: (capture.clone(), lent) });
     panel_cell.replace(Some(Rc::downgrade(&panel)));
     panel.update_dependencies();
     panel
@@ -368,14 +373,13 @@ fn slider_row(title: &str, c: &ControlDesc, value: f64, set: impl Fn(f64) + 'sta
     (row, Rc::new(move |v| s.set_value(to_pos(v))))
 }
 
-fn fps_row(title: &str, lo: f64, hi: f64, c: &ControlDesc, emit: impl Fn(Vec<f64>) + 'static) -> adw::ComboRow {
-    let mut choices: Vec<f64> = [240.0, 120.0, 60.0, 30.0, 24.0, 15.0]
-        .into_iter()
-        .filter(|f| *f <= hi + 0.5 && *f >= lo - 0.5)
-        .collect();
-    if choices.is_empty() {
-        choices.push(hi);
-    }
+/// Standard frame rates inside what the camera allows, fastest first.
+pub fn frame_rates(lo: f64, hi: f64) -> Vec<f64> {
+    let choices: Vec<f64> = [240.0, 120.0, 60.0, 30.0, 24.0, 15.0].into_iter().filter(|f| *f <= hi + 0.5 && *f >= lo - 0.5).collect();
+    if choices.is_empty() { vec![hi] } else { choices }
+}
+
+fn fps_row(title: &str, choices: Vec<f64>, c: &ControlDesc, emit: impl Fn(Vec<f64>) + 'static) -> adw::ComboRow {
     let mut labels = vec![gettext("Automatic")];
     labels.extend(choices.iter().map(|f| format!("{f:.0} fps")));
     let names: Vec<&str> = labels.iter().map(String::as_str).collect();
@@ -418,6 +422,25 @@ impl Panel {
                 true
             }
             None => false,
+        }
+    }
+
+    /// The frame rates on offer, fastest first; empty when fixed.
+    pub fn frame_rates(&self) -> &[f64] {
+        self.fps.as_ref().map_or(&[], |(_, r)| r)
+    }
+
+    /// The chosen frame rate; None for automatic.
+    pub fn frame_rate(&self) -> Option<f64> {
+        let (row, rates) = self.fps.as_ref()?;
+        (row.selected() as usize).checked_sub(1).and_then(|i| rates.get(i).copied())
+    }
+
+    /// Choose a frame rate (None for automatic) as if from the row.
+    pub fn set_frame_rate(&self, fps: Option<f64>) {
+        if let Some((row, rates)) = &self.fps {
+            let i = fps.and_then(|f| rates.iter().position(|r| (r - f).abs() < 0.5)).map_or(0, |i| i + 1);
+            row.set_selected(i as u32);
         }
     }
 
@@ -495,6 +518,9 @@ mod tests {
 
     #[test]
     fn labels() {
+        assert_eq!(frame_rates(5.0, 120.0), [120.0, 60.0, 30.0, 24.0, 15.0]);
+        assert_eq!(frame_rates(30.0, 30.0), [30.0]);
+        assert_eq!(frame_rates(40.0, 50.0), [50.0]);
         assert_eq!(split_camel("AeFlickerMode"), "Ae Flicker Mode");
         assert_eq!(format_value("ExposureTime", 4000.0), "1/250 s");
         assert_eq!(format_value("ExposureTime", 1_000_000.0), "1.0 s");

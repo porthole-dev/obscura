@@ -23,6 +23,21 @@
   </developer>
   <launchable type="desktop-id">io.github.jertlok.Obscura.desktop</launchable>
   <url type="homepage">https://github.com/Jertlok/obscura</url>
+  <url type="bugtracker">https://github.com/Jertlok/obscura/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The viewfinder, with exposure and focus at a glance</caption>
+      <image>https://raw.githubusercontent.com/Jertlok/obscura/main/data/screenshots/photo.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Every control the camera has</caption>
+      <image>https://raw.githubusercontent.com/Jertlok/obscura/main/data/screenshots/controls.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Video, with resolution and frame rate</caption>
+      <image>https://raw.githubusercontent.com/Jertlok/obscura/main/data/screenshots/video.png</image>
+    </screenshot>
+  </screenshots>
   <content_rating type="oars-1.1"/>
   <translation type="gettext">obscura</translation>
   <requires>
