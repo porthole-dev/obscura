@@ -14,57 +14,92 @@ use relm4::gtk;
 use crate::camera::{ControlDesc, Kind, Metadata};
 
 pub type OnChange = Rc<dyn Fn(u32, Vec<f64>)>;
+type Reset = Rc<dyn Fn()>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Group {
+    Capture,
     Exposure,
-    Colour,
     Focus,
+    WhiteBalance,
     Image,
     Other,
 }
 
-struct Known {
-    title: String,
-    group: Group,
-}
+/// Controls that are actions rather than settings: tapping the viewfinder
+/// drives them.
+const HIDDEN: &[&str] = &["AfTrigger", "AfPause", "AfWindows", "AfMetering"];
 
-fn known(name: &str) -> Known {
-    let (title, group) = match name {
-        "AeEnable" => (gettext("Automatic Exposure"), Group::Exposure),
-        "ExposureTimeMode" => (gettext("Shutter Speed Mode"), Group::Exposure),
-        "ExposureTime" => (gettext("Shutter Speed"), Group::Exposure),
-        "AnalogueGainMode" => (gettext("Sensitivity Mode"), Group::Exposure),
-        "AnalogueGain" => (gettext("Sensitivity"), Group::Exposure),
-        "DigitalGain" => (gettext("Digital Gain"), Group::Exposure),
-        "ExposureValue" => (gettext("Exposure Compensation"), Group::Exposure),
-        "AeMeteringMode" => (gettext("Metering"), Group::Exposure),
-        "AeConstraintMode" => (gettext("Exposure Constraint"), Group::Exposure),
-        "AeExposureMode" => (gettext("Exposure Program"), Group::Exposure),
-        "AeFlickerMode" => (gettext("Flicker Reduction"), Group::Exposure),
-        "AeFlickerPeriod" => (gettext("Flicker Period"), Group::Exposure),
-        "FrameDurationLimits" => (gettext("Frame Rate"), Group::Exposure),
-        "AwbEnable" => (gettext("Automatic White Balance"), Group::Colour),
-        "AwbMode" => (gettext("White Balance Preset"), Group::Colour),
-        "ColourTemperature" => (gettext("Colour Temperature"), Group::Colour),
-        "ColourGains" => (gettext("Colour Gains"), Group::Colour),
-        "Saturation" => (gettext("Saturation"), Group::Colour),
-        "AfMode" => (gettext("Focus Mode"), Group::Focus),
-        "AfRange" => (gettext("Focus Range"), Group::Focus),
-        "AfSpeed" => (gettext("Focus Speed"), Group::Focus),
-        "AfMetering" => (gettext("Focus Area"), Group::Focus),
-        "AfTrigger" => (gettext("Focus Trigger"), Group::Focus),
-        "AfPause" => (gettext("Pause Focus"), Group::Focus),
-        "LensPosition" => (gettext("Focus Distance"), Group::Focus),
-        "Brightness" => (gettext("Brightness"), Group::Image),
-        "Contrast" => (gettext("Contrast"), Group::Image),
-        "Gamma" => (gettext("Gamma"), Group::Image),
-        "Sharpness" => (gettext("Sharpness"), Group::Image),
-        "NoiseReductionMode" => (gettext("Noise Reduction"), Group::Image),
-        "HdrMode" => (gettext("HDR"), Group::Image),
-        other => (split_camel(other), Group::Other),
+/// Known controls in the order a photographer reads them: the automatic
+/// switch first, then what it governs.
+const KNOWN: &[(&str, Group)] = &[
+    ("AeEnable", Group::Exposure),
+    ("ExposureValue", Group::Exposure),
+    ("AnalogueGainMode", Group::Exposure),
+    ("AnalogueGain", Group::Exposure),
+    ("ExposureTimeMode", Group::Exposure),
+    ("ExposureTime", Group::Exposure),
+    ("DigitalGain", Group::Exposure),
+    ("AeExposureMode", Group::Exposure),
+    ("AeConstraintMode", Group::Exposure),
+    ("AeMeteringMode", Group::Exposure),
+    ("AeFlickerMode", Group::Exposure),
+    ("AeFlickerPeriod", Group::Exposure),
+    ("FrameDurationLimits", Group::Capture),
+    ("AfMode", Group::Focus),
+    ("LensPosition", Group::Focus),
+    ("AfRange", Group::Focus),
+    ("AfSpeed", Group::Focus),
+    ("AwbEnable", Group::WhiteBalance),
+    ("AwbMode", Group::WhiteBalance),
+    ("ColourTemperature", Group::WhiteBalance),
+    ("ColourGains", Group::WhiteBalance),
+    ("Brightness", Group::Image),
+    ("Contrast", Group::Image),
+    ("Saturation", Group::Image),
+    ("Sharpness", Group::Image),
+    ("Gamma", Group::Image),
+    ("NoiseReductionMode", Group::Image),
+    ("HdrMode", Group::Image),
+];
+
+/// Title, group and sort rank; unknown controls go last, by name.
+fn known(name: &str) -> (String, Group, usize) {
+    let title = match name {
+        "AeEnable" => gettext("Automatic Exposure"),
+        "ExposureValue" => gettext("Exposure Compensation"),
+        "AnalogueGainMode" => gettext("ISO Mode"),
+        "AnalogueGain" => gettext("ISO"),
+        "ExposureTimeMode" => gettext("Shutter Speed Mode"),
+        "ExposureTime" => gettext("Shutter Speed"),
+        "DigitalGain" => gettext("Digital Gain"),
+        "AeExposureMode" => gettext("Exposure Program"),
+        "AeConstraintMode" => gettext("Exposure Priority"),
+        "AeMeteringMode" => gettext("Metering"),
+        "AeFlickerMode" => gettext("Flicker Reduction"),
+        "AeFlickerPeriod" => gettext("Flicker Period"),
+        "FrameDurationLimits" => gettext("Frame Rate"),
+        "AfMode" => gettext("Focus Mode"),
+        "LensPosition" => gettext("Focus Distance"),
+        "AfRange" => gettext("Focus Range"),
+        "AfSpeed" => gettext("Focus Speed"),
+        "AwbEnable" => gettext("Automatic White Balance"),
+        "AwbMode" => gettext("Preset"),
+        "ColourTemperature" => gettext("Colour Temperature"),
+        "ColourGains" => gettext("Colour Gains"),
+        "Brightness" => gettext("Brightness"),
+        "Contrast" => gettext("Contrast"),
+        "Saturation" => gettext("Saturation"),
+        "Sharpness" => gettext("Sharpness"),
+        "Gamma" => gettext("Gamma"),
+        "NoiseReductionMode" => gettext("Noise Reduction"),
+        "HdrMode" => gettext("HDR"),
+        other => split_camel(other),
     };
-    Known { title, group }
+    match KNOWN.iter().position(|(n, _)| *n == name) {
+        Some(i) => (title, KNOWN[i].1, i),
+        None => (title, Group::Other, KNOWN.len()),
+    }
 }
 
 /// "AeFlickerMode" -> "Ae Flicker Mode", for controls nobody taught us about.
@@ -103,18 +138,19 @@ fn enum_labels(control: &str, enums: &[(i32, String)]) -> Vec<String> {
         .collect()
 }
 
-fn format_value(name: &str, v: f64) -> String {
+pub fn format_value(name: &str, v: f64) -> String {
     match name {
-        "ExposureTime" | "ExposureTimeMetadata" => {
+        "ExposureTime" => {
             let s = v / 1e6;
             if s >= 0.5 { format!("{s:.1} s") } else { format!("1/{:.0} s", 1.0 / s.max(1e-6)) }
         }
-        "AnalogueGain" => format!("ISO {:.0}  ({v:.2}×)", v * 100.0),
+        "AnalogueGain" => format!("{:.0}", v * 100.0),
         "DigitalGain" => format!("{v:.2}×"),
         "ExposureValue" => format!("{v:+.1} EV"),
         "ColourTemperature" => format!("{v:.0} K"),
         "LensPosition" if v <= 0.0 => "∞".into(),
-        "LensPosition" => format!("{:.2} m  ({v:.1} dpt)", 1.0 / v),
+        "LensPosition" if v < 1.0 => format!("{:.1} m", 1.0 / v),
+        "LensPosition" => format!("{:.0} cm", 100.0 / v),
         _ if v.fract() == 0.0 => format!("{v:.0}"),
         _ => format!("{v:.2}"),
     }
@@ -130,14 +166,34 @@ pub struct Panel {
     rows: HashMap<String, gtk::Widget>,
     values: Rc<RefCell<HashMap<String, Vec<f64>>>>,
     subtitles: HashMap<String, adw::ActionRow>,
+    enums: HashMap<String, Vec<(i32, String)>>,
+    /// Rows lent to the app's Capture group, taken back on drop.
+    capture: (adw::PreferencesGroup, Vec<gtk::Widget>),
 }
 
-pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, on_change: OnChange) -> Rc<Panel> {
+impl Drop for Panel {
+    fn drop(&mut self) {
+        for row in &self.capture.1 {
+            self.capture.0.remove(row);
+        }
+    }
+}
+
+/// Which automatic modes are off, as the panel's current values say.
+#[derive(Default, Clone, Copy)]
+pub struct Manual {
+    pub exposure: bool,
+    pub gain: bool,
+    pub white_balance: bool,
+    pub focus: bool,
+}
+
+pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, capture: &adw::PreferencesGroup, on_change: OnChange) -> Rc<Panel> {
     let widget = gtk::Box::new(gtk::Orientation::Vertical, 18);
     let groups = [
         (Group::Exposure, gettext("Exposure")),
         (Group::Focus, gettext("Focus")),
-        (Group::Colour, gettext("Colour")),
+        (Group::WhiteBalance, gettext("White Balance")),
         (Group::Image, gettext("Image")),
         (Group::Other, gettext("Other")),
     ];
@@ -151,11 +207,16 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, on_change: OnCha
     let values: Rc<RefCell<HashMap<String, Vec<f64>>>> = Rc::default();
     let mut rows = HashMap::new();
     let mut subtitles = HashMap::new();
+    let mut enums = HashMap::new();
+    let mut resets: HashMap<Group, Vec<Reset>> = HashMap::new();
+    let mut lent = Vec::new();
     // Set once every row exists, so a change can re-evaluate dependencies.
     let panel_cell: Rc<RefCell<Option<std::rc::Weak<Panel>>>> = Rc::default();
 
-    for c in controls {
-        let k = known(&c.name);
+    let mut sorted: Vec<&ControlDesc> = controls.iter().filter(|c| !HIDDEN.contains(&c.name.as_str())).collect();
+    sorted.sort_by_key(|c| (known(&c.name).2, c.name.clone()));
+    for c in sorted {
+        let (title, group, _) = known(&c.name);
         values.borrow_mut().insert(c.name.clone(), c.def.clone());
         let emit = {
             let values = values.clone();
@@ -171,46 +232,49 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, on_change: OnCha
             }
         };
 
-        let row: Option<gtk::Widget> = match (c.kind, c.name.as_str()) {
-            (_, "FrameDurationLimits") => fps.map(|(lo, hi)| fps_row(&k.title, lo, hi, c, emit).upcast()),
+        let row: Option<(gtk::Widget, Reset)> = match (c.kind, c.name.as_str()) {
+            (_, "FrameDurationLimits") => fps.map(|(lo, hi)| {
+                let row = fps_row(&title, lo, hi, c, emit);
+                let r = row.clone();
+                (row.upcast(), Rc::new(move || r.set_selected(0)) as Reset)
+            }),
             (Kind::Bool, _) if c.len == 1 => {
-                let row = adw::SwitchRow::builder()
-                    .title(&k.title)
-                    .active(c.def.first().copied().unwrap_or(0.0) != 0.0)
-                    .build();
+                let def = c.def.first().copied().unwrap_or(0.0) != 0.0;
+                let row = adw::SwitchRow::builder().title(&title).active(def).build();
                 row.connect_active_notify(move |r| emit(vec![r.is_active() as u8 as f64]));
-                Some(row.upcast())
+                let r = row.clone();
+                Some((row.upcast(), Rc::new(move || r.set_active(def)) as Reset))
             }
             (Kind::Int, _) if c.len == 1 && !c.enums.is_empty() => {
                 let labels = enum_labels(&c.name, &c.enums);
                 let names: Vec<&str> = labels.iter().map(String::as_str).collect();
                 let model = gtk::StringList::new(&names);
                 let def = c.def.first().copied().unwrap_or(0.0) as i32;
-                let row = adw::ComboRow::builder()
-                    .title(&k.title)
-                    .model(&model)
-                    .selected(c.enums.iter().position(|(v, _)| *v == def).unwrap_or(0) as u32)
-                    .build();
-                let enums = c.enums.clone();
+                let def = c.enums.iter().position(|(v, _)| *v == def).unwrap_or(0) as u32;
+                let row = adw::ComboRow::builder().title(&title).model(&model).selected(def).build();
+                let list = c.enums.clone();
                 row.connect_selected_notify(move |r| {
-                    if let Some((v, _)) = enums.get(r.selected() as usize) {
+                    if let Some((v, _)) = list.get(r.selected() as usize) {
                         emit(vec![*v as f64]);
                     }
                 });
-                Some(row.upcast())
+                enums.insert(c.name.clone(), c.enums.clone());
+                let r = row.clone();
+                Some((row.upcast(), Rc::new(move || r.set_selected(def)) as Reset))
             }
             (Kind::Int | Kind::Float, _) if c.max > c.min && (1..=4).contains(&c.len) => {
-                let expander = (c.len > 1).then(|| adw::ExpanderRow::builder().title(&k.title).build());
+                let expander = (c.len > 1).then(|| adw::ExpanderRow::builder().title(&title).build());
                 let current = Rc::new(RefCell::new(padded(&c.def, c.len, c.min)));
                 let mut first = None;
+                let mut row_resets = Vec::new();
                 for i in 0..c.len {
-                    let title = match (c.len, c.name.as_str(), i) {
-                        (1, _, _) => k.title.clone(),
+                    let row_title = match (c.len, c.name.as_str(), i) {
+                        (1, _, _) => title.clone(),
                         (2, "ColourGains", 0) => gettext("Red"),
                         (2, "ColourGains", 1) => gettext("Blue"),
-                        _ => format!("{} {}", k.title, i + 1),
+                        _ => format!("{} {}", title, i + 1),
                     };
-                    let row = slider_row(&title, c, current.borrow()[i], {
+                    let (row, reset) = slider_row(&row_title, c, current.borrow()[i], {
                         let current = current.clone();
                         let emit = emit.clone();
                         move |v| {
@@ -218,6 +282,7 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, on_change: OnCha
                             emit(current.borrow().clone());
                         }
                     });
+                    row_resets.push(reset);
                     if i == 0 {
                         subtitles.insert(c.name.clone(), row.clone());
                     }
@@ -226,20 +291,39 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, on_change: OnCha
                         None => first = Some(row),
                     }
                 }
-                expander.map(|e| e.upcast()).or(first.map(|r| r.upcast()))
+                let widget: Option<gtk::Widget> = expander.map(|e| e.upcast()).or(first.map(|r| r.upcast()));
+                widget.map(|w| (w, Rc::new(move || row_resets.iter().for_each(|r| r())) as Reset))
             }
             _ => None,
         };
 
-        if let Some(row) = row {
-            let group = &prefs[&k.group];
-            group.add(&row);
-            group.set_visible(true);
+        if let Some((row, reset)) = row {
+            if group == Group::Capture {
+                capture.add(&row);
+                lent.push(row.clone());
+            } else {
+                let g = &prefs[&group];
+                g.add(&row);
+                g.set_visible(true);
+                resets.entry(group).or_default().push(reset);
+            }
             rows.insert(c.name.clone(), row);
         }
     }
 
-    let panel = Rc::new(Panel { widget, rows, values, subtitles });
+    for (group, list) in resets {
+        let button = gtk::Button::builder()
+            .icon_name("edit-undo-symbolic")
+            .tooltip_text(gettext("Reset to Automatic"))
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        button.update_property(&[gtk::accessible::Property::Label(&gettext("Reset to Automatic"))]);
+        button.connect_clicked(move |_| list.iter().for_each(|r| r()));
+        prefs[&group].set_header_suffix(Some(&button));
+    }
+
+    let panel = Rc::new(Panel { widget, rows, values, subtitles, enums, capture: (capture.clone(), lent) });
     panel_cell.replace(Some(Rc::downgrade(&panel)));
     panel.update_dependencies();
     panel
@@ -249,7 +333,7 @@ fn padded(def: &[f64], len: usize, fill: f64) -> Vec<f64> {
     (0..len).map(|i| def.get(i).copied().unwrap_or(fill)).collect()
 }
 
-fn slider_row(title: &str, c: &ControlDesc, value: f64, set: impl Fn(f64) + 'static) -> adw::ActionRow {
+fn slider_row(title: &str, c: &ControlDesc, value: f64, set: impl Fn(f64) + 'static) -> (adw::ActionRow, Reset) {
     let row = adw::ActionRow::builder().title(title).subtitle(format_value(&c.name, value)).build();
     let log = log_scale(&c.name) && c.min >= 0.0;
     let to_pos = move |v: f64| if log { (v.max(1.0)).ln() } else { v };
@@ -261,6 +345,7 @@ fn slider_row(title: &str, c: &ControlDesc, value: f64, set: impl Fn(f64) + 'sta
     scale.set_hexpand(true);
     scale.set_width_request(150);
     scale.set_valign(gtk::Align::Center);
+    scale.update_property(&[gtk::accessible::Property::Label(title)]);
     let (name, int) = (c.name.clone(), c.kind == Kind::Int);
     let subtitle_row = row.clone();
     scale.connect_value_changed(move |s| {
@@ -272,7 +357,8 @@ fn slider_row(title: &str, c: &ControlDesc, value: f64, set: impl Fn(f64) + 'sta
         set(v);
     });
     row.add_suffix(&scale);
-    row
+    let s = scale.clone();
+    (row, Rc::new(move || s.set_value(to_pos(value))))
 }
 
 fn fps_row(title: &str, lo: f64, hi: f64, c: &ControlDesc, emit: impl Fn(Vec<f64>) + 'static) -> adw::ComboRow {
@@ -302,29 +388,40 @@ fn fps_row(title: &str, lo: f64, hi: f64, c: &ControlDesc, emit: impl Fn(Vec<f64
 }
 
 impl Panel {
-    fn value(&self, name: &str) -> Option<f64> {
+    pub fn value(&self, name: &str) -> Option<f64> {
         self.values.borrow().get(name).and_then(|v| v.first().copied())
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.rows.contains_key(name)
+    }
+
+    pub fn manual(&self) -> Manual {
+        let ae_on = self.value("AeEnable").map(|v| v != 0.0);
+        let manual = |mode: &str| self.value(mode).map(|v| v != 0.0);
+        Manual {
+            exposure: manual("ExposureTimeMode").unwrap_or(ae_on == Some(false)),
+            gain: manual("AnalogueGainMode").unwrap_or(ae_on == Some(false)),
+            white_balance: self.value("AwbEnable").map(|v| v == 0.0).unwrap_or(false),
+            focus: self.value("AfMode").map(|v| v == 0.0).unwrap_or(false),
+        }
     }
 
     /// Manual values only mean something while their automatic mode is off.
     pub fn update_dependencies(&self) {
-        let ae_on = self.value("AeEnable").map(|v| v != 0.0);
-        let manual = |mode: &str| self.value(mode).map(|v| v != 0.0);
-        let exposure_manual = manual("ExposureTimeMode").unwrap_or(ae_on == Some(false));
-        let gain_manual = manual("AnalogueGainMode").unwrap_or(ae_on == Some(false));
-        let awb_off = self.value("AwbEnable").map(|v| v == 0.0).unwrap_or(true);
-        let af_manual = self.value("AfMode").map(|v| v == 0.0).unwrap_or(true);
+        let m = self.manual();
+        let ae_on = self.value("AeEnable").map(|v| v != 0.0).unwrap_or(true);
         let set = |name: &str, on: bool| {
             if let Some(w) = self.rows.get(name) {
                 w.set_sensitive(on);
             }
         };
-        set("ExposureTime", exposure_manual);
-        set("AnalogueGain", gain_manual);
-        set("ExposureValue", ae_on.unwrap_or(true) && !(exposure_manual && gain_manual));
-        set("ColourTemperature", awb_off);
-        set("ColourGains", awb_off);
-        set("LensPosition", af_manual);
+        set("ExposureTime", m.exposure);
+        set("AnalogueGain", m.gain);
+        set("ExposureValue", ae_on && !(m.exposure && m.gain));
+        set("ColourTemperature", m.white_balance || !self.rows.contains_key("AwbEnable"));
+        set("ColourGains", m.white_balance || !self.rows.contains_key("AwbEnable"));
+        set("LensPosition", m.focus || !self.rows.contains_key("AfMode"));
     }
 
     /// While a value is automatic, its row shows what the camera chose.
@@ -334,8 +431,31 @@ impl Panel {
                 continue;
             }
             if let Some(v) = meta.get(name) {
-                row.set_subtitle(&format_value(name, v));
+                row.set_subtitle(&format!("{} · {}", gettext("Auto"), format_value(name, v)));
             }
+        }
+    }
+
+    /// Pick the enumerator of `control` whose name ends with `suffix`, as if
+    /// the user had. False when the camera has no such value.
+    pub fn select(&self, control: &str, suffix: &str) -> bool {
+        let (Some(row), Some(list)) = (self.rows.get(control).and_then(|r| r.downcast_ref::<adw::ComboRow>()), self.enums.get(control)) else {
+            return false;
+        };
+        match list.iter().position(|(_, n)| n.ends_with(suffix)) {
+            Some(i) => {
+                row.set_selected(i as u32);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Move keyboard focus, and so the scrolled panel, to the first of
+    /// `names` the camera has.
+    pub fn focus(&self, names: &[&str]) {
+        if let Some(row) = names.iter().find_map(|n| self.rows.get(*n)) {
+            row.grab_focus();
         }
     }
 }
@@ -350,6 +470,8 @@ mod tests {
         assert_eq!(format_value("ExposureTime", 4000.0), "1/250 s");
         assert_eq!(format_value("ExposureTime", 1_000_000.0), "1.0 s");
         assert_eq!(format_value("LensPosition", 0.0), "∞");
+        assert_eq!(format_value("LensPosition", 0.5), "2.0 m");
+        assert_eq!(format_value("LensPosition", 5.0), "20 cm");
         let e = |v: &[&str]| v.iter().enumerate().map(|(i, s)| (i as i32, s.to_string())).collect::<Vec<_>>();
         assert_eq!(enum_labels("AnalogueGainMode", &e(&["AnalogueGainModeAuto", "AnalogueGainModeManual"])), ["Auto", "Manual"]);
         assert_eq!(enum_labels("AeConstraintMode", &e(&["ConstraintNormal", "ConstraintHighlight", "ConstraintShadows"])), ["Normal", "Highlight", "Shadows"]);

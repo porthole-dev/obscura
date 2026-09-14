@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist gettext-domain="obscura">
   <schema id="io.github.jertlok.Obscura" path="/io/github/jertlok/Obscura/">
+    <key name="window-width" type="i">
+      <default>960</default>
+      <summary>Window width</summary>
+    </key>
+    <key name="window-height" type="i">
+      <default>680</default>
+      <summary>Window height</summary>
+    </key>
+    <key name="window-maximized" type="b">
+      <default>false</default>
+      <summary>Window maximized</summary>
+    </key>
     <key name="camera" type="s">
       <default>""</default>
       <summary>Last used camera</summary>
@@ -17,9 +29,25 @@
       <description>Write a DNG next to each photo when the camera offers a raw stream.</description>
     </key>
     <key name="show-info" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Show capture info</summary>
-      <description>Overlay exposure, sensitivity, white balance, focus and frame rate on the viewfinder.</description>
+      <description>Show exposure, sensitivity, white balance, focus and frame rate over the viewfinder.</description>
+    </key>
+    <key name="video" type="b">
+      <default>false</default>
+      <summary>Video mode</summary>
+      <description>Whether the shutter records video rather than taking photos.</description>
+    </key>
+    <key name="grid" type="b">
+      <default>false</default>
+      <summary>Grid</summary>
+      <description>Draw a rule-of-thirds grid over the viewfinder.</description>
+    </key>
+    <key name="timer" type="i">
+      <range min="0" max="10"/>
+      <default>0</default>
+      <summary>Self-timer</summary>
+      <description>Seconds between pressing the shutter and taking the picture; 0 for none.</description>
     </key>
   </schema>
 </schemalist>

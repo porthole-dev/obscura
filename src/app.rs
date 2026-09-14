@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gettextrs::gettext;
 use relm4::adw::{self, prelude::*};
@@ -11,7 +11,7 @@ use relm4::gtk::{self, gdk, gio, glib};
 use relm4::{Component, ComponentParts, ComponentSender};
 
 use crate::camera::{Backend, CameraInfo, Cmd, Event, Facing, LibcameraBackend, Metadata, Mode, Session, Still};
-use crate::controls::{self, Panel};
+use crate::controls::{self, Panel, format_value};
 use crate::portal::{self, Access};
 use crate::video::Recorder;
 use crate::viewfinder::{self, Viewfinder};
@@ -20,9 +20,13 @@ use crate::APP_ID;
 pub struct App {
     backend: Option<Rc<LibcameraBackend>>,
     cameras: Vec<CameraInfo>,
+    /// The camera open, or being opened.
+    camera: usize,
     session: Option<Session>,
     panel: Option<Rc<Panel>>,
     copy_frames: bool,
+    /// Fade the next frame in: the camera or mode just changed.
+    awaiting_frame: bool,
     frames: u32,
     fps_since: Instant,
     fps: f64,
@@ -32,23 +36,41 @@ pub struct App {
     video: bool,
     recorder: Option<Arc<Recorder>>,
     record_started: Option<Instant>,
+    record_tick: Option<glib::SourceId>,
     frame_duration: Option<f64>,
+    /// Self-timer seconds, 0 for off.
+    timer: u32,
+    countdown: Option<(u32, glib::SourceId)>,
+    /// Bumped per tap, so a late hide does not hide a newer focus ring.
+    focus_generation: u32,
+    focusing: bool,
 }
 
 #[derive(Debug)]
 pub enum Msg {
     Camera(Event),
     SwitchCamera,
-    SelectMode(u32),
+    SelectMode(Mode),
+    SelectModeIndex(u32),
+    /// The shutter: starts the self-timer when one is set.
     Capture,
+    Countdown,
     OpenLast,
     Retry,
-    ToggleSidebar,
-    Saved(Result<(PathBuf, Vec<u8>, u32, u32, i32), String>),
+    OpenSettings,
+    ToggleControls,
+    ShowControl(&'static [&'static str]),
+    Saved(Result<(PathBuf, Thumb), String>),
+    /// The newest photo already on disk, found at startup.
+    Found(PathBuf, Thumb),
     SetVideo(bool),
     RecordingStarted(Result<Arc<Recorder>, String>),
     RecordingDone(Result<PathBuf, String>),
     Tick,
+    CycleTimer,
+    Grid(bool),
+    TapFocus(f64, f64),
+    HideFocus(u32),
 }
 
 #[derive(Debug)]
@@ -56,44 +78,134 @@ pub enum CmdOut {
     Access(Access),
 }
 
+/// Tight RGBA rows for the gallery button.
+pub struct Thumb {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    rotation: i32,
+}
+
+impl std::fmt::Debug for Thumb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Thumb({}x{})", self.width, self.height)
+    }
+}
+
+/// Current values over the viewfinder, each opening its control.
+pub struct Chips {
+    iso: gtk::Button,
+    shutter: gtk::Button,
+    ev: gtk::Button,
+    wb: gtk::Button,
+    focus: gtk::Button,
+    fps: gtk::Button,
+}
+
 pub struct Widgets {
     window: adw::ApplicationWindow,
     toasts: adw::ToastOverlay,
-    title: adw::WindowTitle,
     stack: gtk::Stack,
     status: adw::StatusPage,
     retry: gtk::Button,
+    open_settings: gtk::Button,
     viewfinder: Viewfinder,
-    info: gtk::Label,
-    split: adw::OverlaySplitView,
+    focus_layer: gtk::Fixed,
+    focus_ring: gtk::Box,
+    countdown: gtk::Label,
+    controls_title: adw::WindowTitle,
+    controls_toggle: gtk::ToggleButton,
     controls_box: gtk::Box,
+    capture_group: adw::PreferencesGroup,
     mode_row: adw::ComboRow,
     mode_handler: glib::SignalHandlerId,
     raw_row: adw::SwitchRow,
+    raw_toggle: gtk::ToggleButton,
+    quick: gtk::Box,
+    resolution: gtk::MenuButton,
+    resolution_action: gio::SimpleAction,
+    timer_button: gtk::Button,
+    timer_label: gtk::Label,
     switch: gtk::Button,
     capture: gtk::Button,
     modes: adw::ToggleGroup,
+    record_pill: gtk::Box,
     record_time: gtk::Label,
     thumbnail: Viewfinder,
     gallery: gtk::Button,
+    saving_spinner: adw::Spinner,
+    chips: Chips,
+}
+
+fn aspect(m: &Mode) -> String {
+    let r = m.width as f64 / m.height.max(1) as f64;
+    match () {
+        _ if (r - 4.0 / 3.0).abs() < 0.02 => "4:3".into(),
+        _ if (r - 16.0 / 9.0).abs() < 0.03 => "16:9".into(),
+        _ if (r - 3.0 / 2.0).abs() < 0.02 => "3:2".into(),
+        _ if (r - 1.0).abs() < 0.02 => "1:1".into(),
+        _ => format!("{r:.2}:1"),
+    }
+}
+
+fn megapixels(m: &Mode) -> String {
+    let mp = m.width as f64 * m.height as f64 / 1e6;
+    if mp >= 9.5 { format!("{mp:.0} MP") } else { format!("{mp:.1} MP") }
 }
 
 fn mode_label(m: &Mode) -> String {
-    let mp = m.width as f64 * m.height as f64 / 1e6;
-    let g = gcd(m.width, m.height).max(1);
-    let (aw, ah) = (m.width / g, m.height / g);
-    let aspect = match (aw, ah) {
-        (4, 3) | (16, 9) | (3, 2) | (1, 1) => format!("{aw}:{ah}"),
-        _ if (m.width as f64 / m.height as f64 - 4.0 / 3.0).abs() < 0.02 => "4:3".into(),
-        _ if (m.width as f64 / m.height as f64 - 16.0 / 9.0).abs() < 0.03 => "16:9".into(),
-        _ => format!("{:.2}:1", m.width as f64 / m.height as f64),
-    };
-    let _ = mp;
-    format!("{} × {} ({aspect})", m.width, m.height)
+    format!("{} · {} · {} × {}", aspect(m), megapixels(m), m.width, m.height)
 }
 
-fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 { a } else { gcd(b, a % b) }
+fn wide(m: &Mode) -> bool {
+    (m.width as f64 / m.height.max(1) as f64 - 16.0 / 9.0).abs() < 0.05
+}
+
+/// Say an icon-only widget's name to assistive technologies.
+fn label(widget: &impl IsA<gtk::Accessible>, text: &str) {
+    widget.update_property(&[gtk::accessible::Property::Label(text)]);
+}
+
+fn icon_button(icon: &str, tooltip: &str, classes: &[&str]) -> gtk::Button {
+    let b = gtk::Button::builder().icon_name(icon).tooltip_text(tooltip).valign(gtk::Align::Center).css_classes(classes.to_vec()).build();
+    label(&b, tooltip);
+    b
+}
+
+fn chip(tooltip: &str, sender: &ComponentSender<App>, rows: &'static [&'static str]) -> gtk::Button {
+    let text = gtk::Label::builder().width_chars(3).css_classes(["numeric"]).build();
+    let b = gtk::Button::builder().child(&text).tooltip_text(tooltip).css_classes(["chip"]).visible(false).build();
+    label(&b, tooltip);
+    let s = sender.clone();
+    b.connect_clicked(move |_| s.input(Msg::ShowControl(rows)));
+    b
+}
+
+fn set_chip(b: &gtk::Button, text: &str, manual: bool) {
+    if let Some(l) = b.child().and_downcast::<gtk::Label>() {
+        l.set_label(text);
+    }
+    if manual { b.add_css_class("manual") } else { b.remove_css_class("manual") }
+}
+
+/// A boolean setting as a stateful action; plain state when the schema is
+/// not installed (running from the build tree).
+fn toggle_action(settings: Option<&gio::Settings>, key: &str) -> gio::Action {
+    match settings {
+        Some(s) => s.create_action(key),
+        None => {
+            let a = gio::SimpleAction::new_stateful(key, None, &false.to_variant());
+            a.connect_activate(|a, _| {
+                let on = a.state().and_then(|v| v.get::<bool>()).unwrap_or(false);
+                a.set_state(&(!on).to_variant());
+            });
+            a.upcast()
+        }
+    }
+}
+
+fn action_bool(a: &gio::Action) -> bool {
+    a.state().and_then(|v| v.get::<bool>()).unwrap_or(false)
 }
 
 impl App {
@@ -116,50 +228,142 @@ impl App {
         let _ = s.set_string("camera", &session.info.id);
     }
 
-    fn open(&self, index: usize, mode: Option<Mode>) {
+    /// Close the session and open `index` in `mode`; the viewfinder goes
+    /// dark until the first frame fades it back in.
+    fn reopen(&mut self, w: &Widgets, index: usize, mode: Option<Mode>) {
+        w.capture.set_sensitive(false);
+        w.viewfinder.add_css_class("switching");
+        w.viewfinder.set_texture(None);
+        w.focus_ring.set_visible(false);
+        // A still requested from the closing session may never arrive.
+        self.saving = false;
+        w.saving_spinner.set_visible(false);
+        self.session = None;
+        self.awaiting_frame = true;
+        self.camera = index;
         let mode = mode.or_else(|| self.cameras.get(index).and_then(|c| self.saved_mode(&c.id)));
         if let Some(b) = self.backend() {
             b.send(Cmd::Open { camera: index, mode });
         }
     }
 
-    fn show_status(&self, w: &Widgets, icon: &str, title: &str, description: &str, retry: bool) {
-        w.status.set_icon_name(Some(icon));
+    /// `icon` None shows a spinner.
+    fn show_status(&self, w: &Widgets, icon: Option<&str>, title: &str, description: Option<&str>, retry: bool) {
+        match icon {
+            Some(icon) => w.status.set_icon_name(Some(icon)),
+            None => w.status.set_paintable(Some(&adw::SpinnerPaintable::new(Some(&w.status)))),
+        }
         w.status.set_title(title);
-        w.status.set_description(Some(description));
+        w.status.set_description(description);
         w.retry.set_visible(retry);
+        w.open_settings.set_visible(false);
+        w.quick.set_visible(false);
         w.stack.set_visible_child_name("status");
+    }
+
+    fn raw_enabled(&self) -> bool {
+        relm4::main_application().lookup_action("raw").is_some_and(|a| action_bool(&a))
+    }
+
+    fn update_chips(&self, c: &Chips, meta: &Metadata) {
+        let Some(panel) = &self.panel else { return };
+        let manual = panel.manual();
+        if let Some(g) = meta.get("AnalogueGain") {
+            set_chip(&c.iso, &format!("ISO {:.0}", g * meta.get("DigitalGain").unwrap_or(1.0) * 100.0), manual.gain);
+        }
+        if let Some(us) = meta.get("ExposureTime") {
+            set_chip(&c.shutter, &format_value("ExposureTime", us), manual.exposure);
+        }
+        if let Some(ev) = panel.value("ExposureValue") {
+            let text = if ev == 0.0 { "±0 EV".to_string() } else { format!("{ev:+.1} EV") };
+            set_chip(&c.ev, &text, ev != 0.0);
+        }
+        match meta.get("ColourTemperature") {
+            Some(k) => set_chip(&c.wb, &format!("{k:.0} K"), manual.white_balance),
+            None => set_chip(&c.wb, &gettext("AWB"), manual.white_balance),
+        }
+        match (manual.focus, meta.get("LensPosition")) {
+            (true, Some(d)) => set_chip(&c.focus, &format!("MF {}", format_value("LensPosition", d)), true),
+            _ => set_chip(&c.focus, &gettext("AF"), false),
+        }
+        set_chip(&c.fps, &format!("{:.0} fps", self.fps), false);
+    }
+
+    /// Press the shutter for real: a photo, or start/stop a recording.
+    fn shoot(&mut self, w: &Widgets, sender: &ComponentSender<Self>) {
+        let Some(session) = &self.session else { return };
+        if self.video {
+            if let Some(recorder) = self.recorder.take() {
+                w.capture.set_sensitive(false);
+                if let Some(b) = self.backend() {
+                    b.send(Cmd::Record(None));
+                }
+                let input = sender.input_sender().clone();
+                std::thread::spawn(move || {
+                    let _ = input.send(Msg::RecordingDone(recorder.stop().map_err(|e| e.to_string())));
+                });
+            } else if self.record_started.is_none() {
+                w.capture.set_sensitive(false);
+                self.record_started = Some(Instant::now());
+                let (view, fourcc, rotation) = (session.view, session.fourcc, session.info.rotation);
+                let fps = self.frame_duration.map(|us| 1e6 / us).or(session.fps.map(|f| f.1)).unwrap_or(30.0);
+                let input = sender.input_sender().clone();
+                std::thread::spawn(move || {
+                    let r = Recorder::start(view.width, view.height, fourcc, fps, rotation).map(Arc::new).map_err(|e| e.to_string());
+                    let _ = input.send(Msg::RecordingStarted(r));
+                });
+            }
+        } else if !self.saving {
+            self.saving = true;
+            w.capture.set_sensitive(false);
+            w.saving_spinner.set_visible(true);
+            w.viewfinder.add_css_class("flash");
+            let vf = w.viewfinder.clone();
+            glib::timeout_add_local_once(Duration::from_millis(90), move || vf.remove_css_class("flash"));
+            if let Some(b) = self.backend() {
+                b.send(Cmd::Capture);
+            }
+        }
+    }
+
+    fn set_recording_ui(&self, w: &Widgets, on: bool) {
+        for widget in [w.modes.upcast_ref::<gtk::Widget>(), w.switch.upcast_ref(), w.mode_row.upcast_ref(), w.resolution.upcast_ref(), w.timer_button.upcast_ref()] {
+            widget.set_sensitive(!on);
+        }
+        w.record_pill.set_visible(on);
+        w.capture.set_icon_name(if on { "media-playback-stop-symbolic" } else { "media-record-symbolic" });
+        let tip = if on { gettext("Stop Recording") } else { gettext("Start Recording") };
+        w.capture.set_tooltip_text(Some(&tip));
+        label(&w.capture, &tip);
+        if on { w.capture.add_css_class("recording") } else { w.capture.remove_css_class("recording") }
+    }
+
+    fn show_timer(&self, w: &Widgets) {
+        w.timer_label.set_label(&format!("{} s", self.timer));
+        w.timer_label.set_visible(self.timer > 0);
+        let tip = match self.timer {
+            0 => gettext("Self-Timer: Off"),
+            n => gettext("Self-Timer: {} Seconds").replace("{}", &n.to_string()),
+        };
+        w.timer_button.set_tooltip_text(Some(&tip));
+        label(&w.timer_button, &tip);
+        if self.timer > 0 { w.timer_button.add_css_class("on") } else { w.timer_button.remove_css_class("on") }
     }
 }
 
-fn info_line(meta: &Metadata, fps: f64) -> String {
-    let mut parts = Vec::new();
-    if let Some(us) = meta.get("ExposureTime") {
-        let s = us / 1e6;
-        parts.push(if s >= 0.5 { format!("{s:.1} s") } else { format!("1/{:.0} s", 1.0 / s.max(1e-6)) });
-    }
-    if let Some(g) = meta.get("AnalogueGain") {
-        parts.push(format!("ISO {:.0}", g * meta.get("DigitalGain").unwrap_or(1.0) * 100.0));
-    }
-    if let Some(k) = meta.get("ColourTemperature") {
-        parts.push(format!("{k:.0} K"));
-    }
-    if let Some(l) = meta.get("LensPosition") {
-        parts.push(format!("{} {l:.1}", gettext("Focus")));
-    }
-    if let Some(s) = meta.get("AfState") {
-        let state = match s as i32 {
-            1 => gettext("focusing"),
-            2 => gettext("focused"),
-            3 => gettext("focus failed"),
-            _ => String::new(),
-        };
-        if !state.is_empty() {
-            parts.push(state);
-        }
-    }
-    parts.push(format!("{fps:.0} fps"));
-    parts.join("  ·  ")
+/// The newest photo already in the gallery, as a thumbnail.
+fn last_photo() -> Option<(PathBuf, Thumb)> {
+    let path = std::fs::read_dir(crate::photo::pictures_dir())
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("jpg")))
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?
+        .path();
+    let pixbuf = gdk::gdk_pixbuf::Pixbuf::from_file_at_scale(&path, 128, 128, true).ok()?.add_alpha(false, 0, 0, 0).ok()?;
+    let (w, h, stride) = (pixbuf.width() as usize, pixbuf.height() as usize, pixbuf.rowstride() as usize);
+    let bytes = pixbuf.read_pixel_bytes();
+    let rgba = (0..h).flat_map(|y| bytes[y * stride..y * stride + w * 4].to_vec()).collect();
+    Some((path, Thumb { rgba, width: w as u32, height: h as u32, rotation: 0 }))
 }
 
 impl Component for App {
@@ -173,130 +377,194 @@ impl Component for App {
     fn init_root() -> Self::Root {
         adw::ApplicationWindow::builder()
             .title(gettext("Obscura"))
-            .default_width(900)
-            .default_height(640)
+            .default_width(960)
+            .default_height(680)
             .width_request(360)
             .height_request(294)
             .build()
     }
 
     fn init(_: (), window: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
+        // Pictures read best against dark surroundings.
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
         let settings = gio::SettingsSchemaSource::default()
             .and_then(|src| src.lookup(APP_ID, true))
             .map(|_| gio::Settings::new(APP_ID));
+        let app = relm4::main_application();
+        if let Some(s) = &settings {
+            s.bind("window-width", &window, "default-width").build();
+            s.bind("window-height", &window, "default-height").build();
+            s.bind("window-maximized", &window, "maximized").build();
+        }
 
-        // Header
-        let title = adw::WindowTitle::new(&gettext("Obscura"), "");
-        let header = adw::HeaderBar::builder().title_widget(&title).build();
-        let sidebar_toggle = gtk::ToggleButton::builder()
-            .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text(gettext("Camera Controls"))
+        let grid_action = toggle_action(settings.as_ref(), "grid");
+        let raw_action = toggle_action(settings.as_ref(), "raw");
+        let info_action = toggle_action(settings.as_ref(), "show-info");
+        for a in [&grid_action, &raw_action, &info_action] {
+            app.add_action(a);
+        }
+
+        // Header: quick settings over the viewfinder
+        let grid_toggle = gtk::ToggleButton::builder().icon_name("view-grid-symbolic").tooltip_text(gettext("Grid")).action_name("app.grid").build();
+        label(&grid_toggle, &gettext("Grid"));
+        let timer_label = gtk::Label::builder().css_classes(["numeric"]).visible(false).build();
+        let timer_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        timer_content.append(&gtk::Image::from_icon_name("alarm-symbolic"));
+        timer_content.append(&timer_label);
+        let timer_button = gtk::Button::builder().child(&timer_content).css_classes(["flat", "timer"]).build();
+        let raw_toggle = gtk::ToggleButton::builder()
+            .label(gettext("RAW"))
+            .tooltip_text(gettext("Also Save RAW (DNG)"))
+            .action_name("app.raw")
+            .css_classes(["raw-toggle"])
+            .visible(false)
             .build();
-        header.pack_end(&sidebar_toggle);
+        let quick = gtk::Box::builder().spacing(2).visible(false).build();
+        quick.append(&grid_toggle);
+        quick.append(&timer_button);
+        quick.append(&raw_toggle);
+        let resolution = gtk::MenuButton::builder().label("4:3").tooltip_text(gettext("Resolution")).css_classes(["flat", "numeric"]).build();
+        quick.append(&resolution);
+
+        let controls_toggle = gtk::ToggleButton::builder().icon_name("preferences-system-symbolic").tooltip_text(gettext("Camera Controls")).build();
+        label(&controls_toggle, &gettext("Camera Controls"));
+        quick.bind_property("visible", &controls_toggle, "visible").sync_create().build();
         let menu = gio::Menu::new();
-        menu.append(Some(&gettext("Show Capture _Info")), Some("app.show-info"));
-        menu.append(Some(&gettext("_Keyboard Shortcuts")), Some("win.show-help-overlay"));
-        menu.append(Some(&gettext("_About Obscura")), Some("app.about"));
-        header.pack_end(&gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).primary(true).build());
+        let section = gio::Menu::new();
+        section.append(Some(&gettext("Show Capture _Info")), Some("app.show-info"));
+        menu.append_section(None, &section);
+        let section = gio::Menu::new();
+        section.append(Some(&gettext("_Keyboard Shortcuts")), Some("app.shortcuts"));
+        section.append(Some(&gettext("_About Obscura")), Some("app.about"));
+        menu.append_section(None, &section);
+        let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).primary(true).tooltip_text(gettext("Main Menu")).build();
+        label(&menu_button, &gettext("Main Menu"));
+        // No title: a phone has room for the quick settings, not a name.
+        let header = adw::HeaderBar::builder().title_widget(&gtk::Box::new(gtk::Orientation::Horizontal, 0)).build();
+        header.pack_start(&quick);
+        header.pack_end(&menu_button);
+        header.pack_end(&controls_toggle);
 
         // Viewfinder page
         let viewfinder = Viewfinder::default();
         viewfinder.set_hexpand(true);
         viewfinder.set_vexpand(true);
         viewfinder.add_css_class("viewfinder");
+        label(&viewfinder, &gettext("Viewfinder"));
+        {
+            let s = sender.clone();
+            let tap = gtk::GestureClick::new();
+            tap.connect_released(move |g, n, x, y| {
+                if n == 1 {
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    s.input(Msg::TapFocus(x, y));
+                }
+            });
+            viewfinder.add_controller(tap);
+        }
 
-        let info = gtk::Label::builder()
+        let focus_ring = gtk::Box::builder().css_classes(["focus-ring"]).width_request(76).height_request(76).visible(false).build();
+        let focus_layer = gtk::Fixed::builder().can_target(false).build();
+        focus_layer.put(&focus_ring, 0.0, 0.0);
+        let countdown = gtk::Label::builder().css_classes(["countdown", "numeric"]).halign(gtk::Align::Center).valign(gtk::Align::Center).can_target(false).visible(false).build();
+
+        let record_time = gtk::Label::builder().label("0:00").css_classes(["numeric"]).build();
+        let record_pill = gtk::Box::builder()
+            .spacing(8)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Start)
             .margin_top(12)
-            .css_classes(["capture-info", "caption", "numeric"])
+            .css_classes(["recording-pill"])
             .visible(false)
+            .build();
+        record_pill.append(&gtk::Box::builder().css_classes(["rec-dot"]).valign(gtk::Align::Center).build());
+        record_pill.append(&record_time);
+
+        let chips = Chips {
+            iso: chip(&gettext("ISO"), &sender, &["AnalogueGainMode", "AnalogueGain", "AeEnable"]),
+            shutter: chip(&gettext("Shutter Speed"), &sender, &["ExposureTimeMode", "ExposureTime", "AeEnable"]),
+            ev: chip(&gettext("Exposure Compensation"), &sender, &["ExposureValue"]),
+            wb: chip(&gettext("White Balance"), &sender, &["AwbMode", "AwbEnable", "ColourTemperature"]),
+            focus: chip(&gettext("Focus"), &sender, &["AfMode", "LensPosition"]),
+            fps: chip(&gettext("Frame Rate"), &sender, &["FrameDurationLimits"]),
+        };
+        let strip = gtk::Box::builder().spacing(6).halign(gtk::Align::Center).build();
+        for c in [&chips.iso, &chips.shutter, &chips.ev, &chips.wb, &chips.focus, &chips.fps] {
+            strip.append(c);
+        }
+        let chip_scroller = gtk::ScrolledWindow::builder()
+            .child(&strip)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::External)
+            .build();
+        info_action
+            .bind_property("state", &chip_scroller, "visible")
+            .transform_to(|_, v: glib::Variant| v.get::<bool>())
+            .sync_create()
             .build();
 
         let capture = gtk::Button::builder()
             .icon_name("camera-photo-symbolic")
             .tooltip_text(gettext("Take Photo"))
-            .css_classes(["circular", "shutter"])
-            .valign(gtk::Align::Center)
+            .css_classes(["shutter"])
             .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        let switch = gtk::Button::builder()
-            .icon_name("camera-switch-symbolic")
-            .tooltip_text(gettext("Switch Camera"))
-            .css_classes(["circular", "osd", "bottom-button"])
-            .valign(gtk::Align::Center)
-            .visible(false)
-            .build();
+        label(&capture, &gettext("Take Photo"));
+        let switch = icon_button("camera-switch-symbolic", &gettext("Switch Camera"), &["round-button", "switch-camera"]);
+        switch.set_visible(false);
         let thumbnail = Viewfinder::default();
-        thumbnail.set_size_request(48, 48);
+        thumbnail.set_size_request(52, 52);
         thumbnail.set_cover(true);
         thumbnail.set_overflow(gtk::Overflow::Hidden);
+        let saving_spinner = adw::Spinner::builder().visible(false).halign(gtk::Align::Center).valign(gtk::Align::Center).build();
+        let gallery_content = gtk::Overlay::builder().child(&thumbnail).build();
+        gallery_content.add_overlay(&saving_spinner);
         let gallery = gtk::Button::builder()
-            .child(&thumbnail)
+            .child(&gallery_content)
             .tooltip_text(gettext("Open Last Capture"))
-            .css_classes(["circular", "osd", "bottom-button", "gallery"])
+            .css_classes(["round-button", "gallery"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        let buttons = gtk::CenterBox::builder()
-            .start_widget(&gallery)
-            .center_widget(&capture)
-            .end_widget(&switch)
-            .build();
-        let modes = adw::ToggleGroup::builder().halign(gtk::Align::Center).css_classes(["round"]).build();
-        modes.add(adw::Toggle::builder().name("photo").icon_name("camera-photo-symbolic").tooltip(gettext("Photo")).build());
-        modes.add(adw::Toggle::builder().name("video").icon_name("camera-video-symbolic").tooltip(gettext("Video")).build());
+        label(&gallery, &gettext("Open Last Capture"));
+        let buttons = gtk::CenterBox::builder().start_widget(&gallery).center_widget(&capture).end_widget(&switch).build();
+        let modes = adw::ToggleGroup::builder().halign(gtk::Align::Center).css_classes(["round", "mode-switch"]).build();
+        modes.add(adw::Toggle::builder().name("photo").label(gettext("Photo")).build());
+        modes.add(adw::Toggle::builder().name("video").label(gettext("Video")).build());
         modes.set_active_name(Some("photo"));
-        let bar = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
-            .valign(gtk::Align::End)
-            .css_classes(["capture-bar"])
-            .build();
-        bar.append(&modes);
-        bar.append(&buttons);
-        let record_time = gtk::Label::builder()
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::Start)
-            .margin_top(48)
-            .css_classes(["recording-time", "numeric"])
-            .visible(false)
-            .build();
+        let bar_content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(14).build();
+        bar_content.append(&chip_scroller);
+        bar_content.append(&modes);
+        bar_content.append(&buttons);
+        // Full-width shade, thumb-width controls.
+        let bar = adw::Clamp::builder().maximum_size(460).tightening_threshold(460).child(&bar_content).valign(gtk::Align::End).css_classes(["capture-bar"]).build();
 
         let overlay = gtk::Overlay::builder().child(&viewfinder).build();
-        overlay.add_overlay(&info);
+        overlay.add_overlay(&focus_layer);
+        overlay.add_overlay(&countdown);
+        overlay.add_overlay(&record_pill);
         overlay.add_overlay(&bar);
-        overlay.add_overlay(&record_time);
-        {
-            let s = sender.clone();
-            modes.connect_active_name_notify(move |g| s.input(Msg::SetVideo(g.active_name().as_deref() == Some("video"))));
-        }
 
-        // Status page (permission, no camera, errors)
-        let retry = gtk::Button::builder()
-            .label(gettext("Try Again"))
-            .halign(gtk::Align::Center)
-            .css_classes(["pill", "suggested-action"])
-            .visible(false)
-            .build();
-        let status = adw::StatusPage::builder()
-            .icon_name("camera-web-symbolic")
-            .title(gettext("Starting Camera…"))
-            .child(&retry)
-            .build();
+        // Status page: loading, permission, no camera, errors
+        let retry = gtk::Button::builder().label(gettext("_Try Again")).use_underline(true).css_classes(["pill"]).visible(false).build();
+        let open_settings = gtk::Button::builder().label(gettext("Open _Settings")).use_underline(true).css_classes(["pill", "suggested-action"]).visible(false).build();
+        let status_buttons = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).halign(gtk::Align::Center).build();
+        status_buttons.append(&open_settings);
+        status_buttons.append(&retry);
+        let status = adw::StatusPage::builder().title(gettext("Starting Camera…")).child(&status_buttons).build();
+        status.set_paintable(Some(&adw::SpinnerPaintable::new(Some(&status))));
 
         let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).build();
         stack.add_named(&status, Some("status"));
         stack.add_named(&overlay, Some("camera"));
+        let camera_page = adw::ToolbarView::builder().content(&stack).css_classes(["camera"]).build();
+        camera_page.add_top_bar(&header);
 
-        // Controls sidebar
+        // Controls: a sidebar when wide, a bottom sheet when narrow
         let mode_row = adw::ComboRow::builder().title(gettext("Resolution")).build();
-        let raw_row = adw::SwitchRow::builder()
-            .title(gettext("Save RAW"))
-            .subtitle(gettext("Also write a DNG next to each photo"))
-            .visible(false)
-            .build();
+        let raw_row = adw::SwitchRow::builder().title(gettext("Save RAW")).subtitle(gettext("Also write a DNG next to each photo")).visible(false).build();
         if let Some(s) = &settings {
             s.bind("raw", &raw_row, "active").build();
         }
@@ -304,39 +572,60 @@ impl Component for App {
         capture_group.add(&mode_row);
         capture_group.add(&raw_row);
         let controls_box = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        let sidebar_content = gtk::Box::builder()
+        let controls_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
-            .margin_top(12)
+            .margin_top(6)
             .margin_bottom(24)
             .margin_start(12)
             .margin_end(12)
             .build();
-        sidebar_content.append(&capture_group);
-        sidebar_content.append(&controls_box);
-        let sidebar = adw::ToolbarView::new();
-        sidebar.add_top_bar(&adw::HeaderBar::builder().show_title(false).show_end_title_buttons(false).build());
-        sidebar.set_content(Some(
-            &gtk::ScrolledWindow::builder()
-                .hscrollbar_policy(gtk::PolicyType::Never)
-                .child(&adw::Clamp::builder().maximum_size(480).child(&sidebar_content).build())
-                .build(),
-        ));
+        controls_content.append(&capture_group);
+        controls_content.append(&controls_box);
+        let controls_scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .vexpand(true)
+            .child(&adw::Clamp::builder().maximum_size(480).child(&controls_content).build())
+            .build();
+        let controls_title = adw::WindowTitle::new(&gettext("Camera Controls"), "");
+        let controls_header = adw::HeaderBar::builder().title_widget(&controls_title).build();
+        // Shoot without closing the controls.
+        let sheet_capture = icon_button("camera-photo-symbolic", &gettext("Take Photo"), &[]);
+        sheet_capture.set_action_name(Some("app.capture"));
+        controls_header.pack_start(&sheet_capture);
+        let controls_page = adw::ToolbarView::builder().content(&controls_scroller).build();
+        controls_page.add_top_bar(&controls_header);
 
         let split = adw::OverlaySplitView::builder()
             .sidebar_position(gtk::PackType::End)
-            .sidebar(&sidebar)
-            .content(&stack)
+            .sidebar(&adw::LayoutSlot::new("controls"))
+            .content(&adw::LayoutSlot::new("camera"))
             .show_sidebar(false)
             .min_sidebar_width(320.0)
-            .max_sidebar_width(420.0)
+            .max_sidebar_width(400.0)
             .build();
-        split.bind_property("show-sidebar", &sidebar_toggle, "active").bidirectional().sync_create().build();
+        let sheet = adw::BottomSheet::builder()
+            .content(&adw::LayoutSlot::new("camera"))
+            .sheet(&adw::LayoutSlot::new("controls"))
+            .modal(false)
+            .show_drag_handle(true)
+            .build();
+        split.bind_property("show-sidebar", &controls_toggle, "active").bidirectional().sync_create().build();
+        sheet.bind_property("open", &controls_toggle, "active").bidirectional().build();
+        let layouts = adw::MultiLayoutView::new();
+        let wide_layout = adw::Layout::new(&split);
+        wide_layout.set_name(Some("wide"));
+        let narrow_layout = adw::Layout::new(&sheet);
+        narrow_layout.set_name(Some("narrow"));
+        layouts.add_layout(wide_layout);
+        layouts.add_layout(narrow_layout);
+        layouts.set_child("camera", &camera_page);
+        layouts.set_child("controls", &controls_page);
+        layouts.set_layout_name("wide");
 
-        let toolbar = adw::ToolbarView::builder().content(&split).build();
-        toolbar.add_top_bar(&header);
         let toasts = adw::ToastOverlay::new();
-        toasts.set_child(Some(&toolbar));
+        toasts.set_child(Some(&layouts));
         window.set_content(Some(&toasts));
 
         let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
@@ -344,29 +633,13 @@ impl Component for App {
             720.0,
             adw::LengthUnit::Sp,
         ));
-        breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
+        breakpoint.add_setter(&layouts, "layout-name", Some(&"narrow".to_value()));
+        // In the sheet the controls take part of the screen, so the picture
+        // being adjusted stays in sight.
+        breakpoint.add_setter(&controls_scroller, "max-content-height", Some(&340.to_value()));
         window.add_breakpoint(breakpoint);
 
         // Actions
-        let app = relm4::main_application();
-        let show_info = gio::SimpleAction::new_stateful("show-info", None, &false.to_variant());
-        if let Some(s) = &settings {
-            show_info.set_state(&s.boolean("show-info").to_variant());
-        }
-        info.set_visible(show_info.state().and_then(|v| v.get::<bool>()).unwrap_or(false));
-        {
-            let info = info.clone();
-            let settings = settings.clone();
-            show_info.connect_activate(move |a, _| {
-                let on = !a.state().and_then(|v| v.get::<bool>()).unwrap_or(false);
-                a.set_state(&on.to_variant());
-                info.set_visible(on);
-                if let Some(s) = &settings {
-                    let _ = s.set_boolean("show-info", on);
-                }
-            });
-        }
-        app.add_action(&show_info);
         let about = gio::SimpleAction::new("about", None);
         {
             let window = window.clone();
@@ -383,23 +656,32 @@ impl Component for App {
             });
         }
         app.add_action(&about);
-        app.set_accels_for_action("app.show-info", &["i"]);
-
-        // Signals
+        let shortcuts = gio::SimpleAction::new("shortcuts", None);
         {
-            let s = sender.clone();
-            capture.connect_clicked(move |_| s.input(Msg::Capture));
-            let s = sender.clone();
-            switch.connect_clicked(move |_| s.input(Msg::SwitchCamera));
-            let s = sender.clone();
-            gallery.connect_clicked(move |_| s.input(Msg::OpenLast));
-            let s = sender.clone();
-            retry.connect_clicked(move |_| s.input(Msg::Retry));
+            let window = window.clone();
+            shortcuts.connect_activate(move |_, _| {
+                let dialog = adw::ShortcutsDialog::new();
+                let section = adw::ShortcutsSection::new(None);
+                for (title, action) in [
+                    (gettext("Take Photo or Record"), "app.capture"),
+                    (gettext("Photo Mode"), "app.mode::photo"),
+                    (gettext("Video Mode"), "app.mode::video"),
+                    (gettext("Switch Camera"), "app.switch-camera"),
+                    (gettext("Camera Controls"), "app.toggle-controls"),
+                    (gettext("Grid"), "app.grid"),
+                    (gettext("Self-Timer"), "app.timer"),
+                    (gettext("Show Capture Info"), "app.show-info"),
+                    (gettext("Open Last Capture"), "app.open-last"),
+                    (gettext("Keyboard Shortcuts"), "app.shortcuts"),
+                    (gettext("Quit"), "app.quit"),
+                ] {
+                    section.add(adw::ShortcutsItem::from_action(&title, action));
+                }
+                dialog.add(section);
+                dialog.present(Some(&window));
+            });
         }
-        let mode_handler = {
-            let s = sender.clone();
-            mode_row.connect_selected_notify(move |r| s.input(Msg::SelectMode(r.selected())))
-        };
+        app.add_action(&shortcuts);
         let mode_action = gio::SimpleAction::new_stateful("mode", Some(glib::VariantTy::STRING), &"photo".to_variant());
         {
             let modes = modes.clone();
@@ -411,14 +693,29 @@ impl Component for App {
             });
         }
         app.add_action(&mode_action);
+        let resolution_action = gio::SimpleAction::new_stateful("resolution", Some(glib::VariantTy::STRING), &"".to_variant());
+        {
+            let s = sender.clone();
+            resolution_action.connect_activate(move |_, v| {
+                let parsed = v.and_then(|v| v.get::<String>()).and_then(|v| {
+                    let (w, h) = v.split_once('x')?;
+                    Some(Mode { width: w.parse().ok()?, height: h.parse().ok()? })
+                });
+                if let Some(mode) = parsed {
+                    s.input(Msg::SelectMode(mode));
+                }
+            });
+        }
+        app.add_action(&resolution_action);
 
         // Everything the capture bar does is also an action: keyboard
         // accelerators, and scriptable over D-Bus (org.gtk.Actions).
         for (name, accels, msg) in [
             ("capture", &["space", "Return"][..], (|| Msg::Capture) as fn() -> Msg),
-            ("toggle-controls", &["F9"][..], || Msg::ToggleSidebar),
+            ("toggle-controls", &["F9"][..], || Msg::ToggleControls),
             ("switch-camera", &["<Ctrl>Tab"][..], || Msg::SwitchCamera),
             ("open-last", &["<Ctrl>o"][..], || Msg::OpenLast),
+            ("timer", &["<Ctrl>t"][..], || Msg::CycleTimer),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let s = sender.clone();
@@ -426,15 +723,68 @@ impl Component for App {
             app.add_action(&action);
             app.set_accels_for_action(&format!("app.{name}"), accels);
         }
+        let quit = gio::SimpleAction::new("quit", None);
+        {
+            let window = window.clone();
+            quit.connect_activate(move |_, _| window.close());
+        }
+        app.add_action(&quit);
+        for (action, accels) in [
+            ("app.quit", &["<Ctrl>q"][..]),
+            ("app.shortcuts", &["<Ctrl>question"][..]),
+            ("app.grid", &["<Ctrl>g"][..]),
+            ("app.show-info", &["<Ctrl>i"][..]),
+            ("app.mode::photo", &["<Ctrl>1"][..]),
+            ("app.mode::video", &["<Ctrl>2"][..]),
+        ] {
+            app.set_accels_for_action(action, accels);
+        }
+
+        // Signals
+        {
+            let s = sender.clone();
+            capture.connect_clicked(move |_| s.input(Msg::Capture));
+            let s = sender.clone();
+            switch.connect_clicked(move |_| s.input(Msg::SwitchCamera));
+            let s = sender.clone();
+            gallery.connect_clicked(move |_| s.input(Msg::OpenLast));
+            let s = sender.clone();
+            retry.connect_clicked(move |_| s.input(Msg::Retry));
+            let s = sender.clone();
+            open_settings.connect_clicked(move |_| s.input(Msg::OpenSettings));
+            let s = sender.clone();
+            timer_button.connect_clicked(move |_| s.input(Msg::CycleTimer));
+            let s = sender.clone();
+            modes.connect_active_name_notify(move |g| s.input(Msg::SetVideo(g.active_name().as_deref() == Some("video"))));
+            let s = sender.clone();
+            grid_action.connect_notify_local(Some("state"), move |a, _| s.input(Msg::Grid(action_bool(a))));
+        }
+        let mode_handler = {
+            let s = sender.clone();
+            mode_row.connect_selected_notify(move |r| s.input(Msg::SelectModeIndex(r.selected())))
+        };
+        viewfinder.set_grid(action_bool(&grid_action));
 
         sender.oneshot_command(async { CmdOut::Access(portal::request_access().await) });
+        {
+            let input = sender.input_sender().clone();
+            std::thread::spawn(move || {
+                if let Some((path, thumb)) = last_photo() {
+                    let _ = input.send(Msg::Found(path, thumb));
+                }
+            });
+        }
 
+        let video = settings.as_ref().is_some_and(|s| s.boolean("video"));
+        let timer = settings.as_ref().map(|s| s.int("timer").max(0) as u32).unwrap_or(0);
         let model = App {
             backend: None,
             cameras: Vec::new(),
+            camera: 0,
             session: None,
             panel: None,
             copy_frames: false,
+            awaiting_frame: true,
             frames: 0,
             fps_since: Instant::now(),
             fps: 0.0,
@@ -444,41 +794,66 @@ impl Component for App {
             video: false,
             recorder: None,
             record_started: None,
+            record_tick: None,
             frame_duration: None,
+            timer,
+            countdown: None,
+            focus_generation: 0,
+            focusing: false,
         };
         let widgets = Widgets {
             window,
             toasts,
-            title,
             stack,
             status,
             retry,
+            open_settings,
             viewfinder,
-            info,
-            split,
+            focus_layer,
+            focus_ring,
+            countdown,
+            controls_title,
+            controls_toggle,
             controls_box,
+            capture_group,
             mode_row,
             mode_handler,
             raw_row,
+            raw_toggle,
+            quick,
+            resolution,
+            resolution_action,
+            timer_button,
+            timer_label,
             switch,
             capture,
             modes,
+            record_pill,
             record_time,
             thumbnail,
             gallery,
+            saving_spinner,
+            chips,
         };
+        model.show_timer(&widgets);
+        if video {
+            widgets.modes.set_active_name(Some("video"));
+        }
         ComponentParts { model, widgets }
     }
 
     fn update_cmd_with_view(&mut self, w: &mut Self::Widgets, msg: CmdOut, sender: ComponentSender<Self>, _: &Self::Root) {
         match msg {
-            CmdOut::Access(Access::Denied) => self.show_status(
-                w,
-                "camera-disabled-symbolic",
-                &gettext("No Camera Access"),
-                &gettext("Allow camera access for this app in Settings › Privacy › Camera, then try again."),
-                true,
-            ),
+            CmdOut::Access(Access::Denied) => {
+                self.show_status(
+                    w,
+                    Some("camera-disabled-symbolic"),
+                    &gettext("No Camera Access"),
+                    Some(&gettext("Allow Obscura to use the camera in Settings › Privacy › Camera, then try again.")),
+                    true,
+                );
+                w.open_settings.set_visible(true);
+            }
             CmdOut::Access(access) => {
                 if let Access::Unavailable(why) = &access {
                     log::warn!("camera portal unavailable ({why}); using the cameras directly");
@@ -487,27 +862,41 @@ impl Component for App {
                 self.backend = Some(Rc::new(LibcameraBackend::spawn(move |ev| {
                     let _ = input.send(Msg::Camera(ev));
                 })));
-                w.status.set_title(&gettext("Starting Camera…"));
             }
         }
     }
 
     fn update_with_view(&mut self, w: &mut Self::Widgets, msg: Msg, sender: ComponentSender<Self>, _: &Self::Root) {
         match msg {
-            Msg::ToggleSidebar => w.split.set_show_sidebar(!w.split.shows_sidebar()),
+            Msg::ToggleControls => w.controls_toggle.set_active(!w.controls_toggle.is_active()),
+            Msg::ShowControl(names) => {
+                w.controls_toggle.set_active(true);
+                if let Some(panel) = self.panel.clone() {
+                    // Once the sheet or sidebar has mapped the rows.
+                    glib::timeout_add_local_once(Duration::from_millis(250), move || panel.focus(names));
+                }
+            }
             Msg::Retry => {
-                w.retry.set_visible(false);
-                w.status.set_title(&gettext("Starting Camera…"));
-                w.status.set_description(None);
-                sender.oneshot_command(async { CmdOut::Access(portal::request_access().await) });
+                self.show_status(w, None, &gettext("Starting Camera…"), None, false);
+                if self.backend.is_none() {
+                    sender.oneshot_command(async { CmdOut::Access(portal::request_access().await) });
+                } else {
+                    self.reopen(w, self.camera, None);
+                }
+            }
+            Msg::OpenSettings => {
+                let args = [std::ffi::OsStr::new("gnome-control-center"), std::ffi::OsStr::new("camera")];
+                if let Err(e) = gio::Subprocess::newv(&args, gio::SubprocessFlags::NONE) {
+                    w.toasts.add_toast(adw::Toast::new(&format!("{}: {e}", gettext("Could not open Settings"))));
+                }
             }
             Msg::Camera(Event::Cameras(cameras)) => {
                 if cameras.is_empty() {
                     return self.show_status(
                         w,
-                        "camera-hardware-disabled-symbolic",
+                        Some("camera-hardware-disabled-symbolic"),
                         &gettext("No Camera Found"),
-                        &gettext("Connect a camera to take pictures and videos."),
+                        Some(&gettext("Connect a camera to take pictures and videos.")),
                         false,
                     );
                 }
@@ -519,14 +908,17 @@ impl Component for App {
                     .unwrap_or(0);
                 w.switch.set_visible(cameras.len() > 1);
                 self.cameras = cameras;
-                self.open(index, None);
+                self.reopen(w, index, None);
             }
             Msg::Camera(Event::Opened(session)) => {
-                w.title.set_subtitle(&session.info.name());
+                w.controls_title.set_title(&session.info.name());
+                w.controls_title.set_subtitle(if session.info.facing == Facing::External { "" } else { &session.info.model });
                 w.viewfinder.set_rotation(session.info.rotation, session.info.facing == Facing::Front);
                 w.stack.set_visible_child_name("camera");
-                w.capture.set_sensitive(true);
+                w.quick.set_visible(true);
+                w.capture.set_sensitive(!self.saving);
                 w.raw_row.set_visible(session.raw);
+                w.raw_toggle.set_visible(session.raw);
 
                 w.mode_row.block_signal(&w.mode_handler);
                 let labels: Vec<String> = session.modes.iter().map(mode_label).collect();
@@ -534,20 +926,39 @@ impl Component for App {
                 w.mode_row.set_model(Some(&gtk::StringList::new(&labels)));
                 w.mode_row.set_selected(session.modes.iter().position(|m| *m == session.mode).unwrap_or(0) as u32);
                 w.mode_row.unblock_signal(&w.mode_handler);
+                let menu = gio::Menu::new();
+                for m in &session.modes {
+                    menu.append(Some(&mode_label(m)), Some(&format!("app.resolution::{}x{}", m.width, m.height)));
+                }
+                w.resolution.set_menu_model(Some(&menu));
+                w.resolution.set_label(&aspect(&session.mode));
+                w.resolution.set_tooltip_text(Some(&format!("{} ({})", gettext("Resolution"), mode_label(&session.mode))));
+                w.resolution_action.set_state(&format!("{}x{}", session.mode.width, session.mode.height).to_variant());
 
                 while let Some(child) = w.controls_box.first_child() {
                     w.controls_box.remove(&child);
                 }
+                self.panel = None;
                 let backend = self.backend.clone();
                 let on_change: controls::OnChange = Rc::new(move |id, value| {
                     if let Some(b) = backend.as_deref() {
                         b.send(Cmd::SetControl { id, value });
                     }
                 });
-                let panel = controls::build(&session.controls, session.fps, on_change);
+                let panel = controls::build(&session.controls, session.fps, &w.capture_group, on_change);
                 w.controls_box.append(&panel.widget);
+                let has = |names: &[&str]| names.iter().any(|n| panel.has(n));
+                let c = &w.chips;
+                c.iso.set_visible(has(&["AnalogueGain", "AeEnable"]));
+                c.shutter.set_visible(has(&["ExposureTime", "AeEnable"]));
+                c.ev.set_visible(has(&["ExposureValue"]));
+                c.wb.set_visible(has(&["AwbMode", "AwbEnable", "ColourTemperature"]));
+                c.focus.set_visible(has(&["AfMode", "LensPosition"]));
+                // Frame rate is a video decision; photos leave it to exposure.
+                c.fps.set_visible(self.video && has(&["FrameDurationLimits"]));
                 self.panel = Some(panel);
                 self.remember(&session);
+                self.camera = session.camera;
                 self.session = Some(session);
             }
             Msg::Camera(Event::Frame(frame)) => {
@@ -562,6 +973,9 @@ impl Component for App {
                     }
                     Err(()) => {}
                 }
+                if std::mem::take(&mut self.awaiting_frame) {
+                    w.viewfinder.remove_css_class("switching");
+                }
                 self.frames += 1;
                 let elapsed = self.fps_since.elapsed().as_secs_f64();
                 if elapsed >= 1.0 {
@@ -575,69 +989,139 @@ impl Component for App {
                 if let Some(p) = &self.panel {
                     p.show_metadata(&meta);
                 }
-                w.info.set_label(&info_line(&meta, self.fps));
+                self.update_chips(&w.chips, &meta);
+                let settled = match meta.get("AfState").map(|s| s as i32) {
+                    Some(2) => Some("focused"),
+                    Some(3) => Some("failed"),
+                    _ => None,
+                };
+                if self.focusing && let Some(class) = settled {
+                    self.focusing = false;
+                    w.focus_ring.remove_css_class("scanning");
+                    w.focus_ring.add_css_class(class);
+                    let (s, generation) = (sender.clone(), self.focus_generation);
+                    glib::timeout_add_local_once(Duration::from_millis(900), move || s.input(Msg::HideFocus(generation)));
+                }
             }
             Msg::Camera(Event::Still(still)) => {
-                let raw = w.raw_row.is_active();
+                let raw = self.raw_enabled();
                 let input = sender.input_sender().clone();
                 std::thread::spawn(move || {
-                    let result = crate::photo::save(&still, raw).map_err(|e| e.to_string()).map(|path| {
-                        let (thumb, tw, th) = thumbnail(&still);
-                        (path, thumb, tw, th, still.info.rotation)
-                    });
+                    let result = crate::photo::save(&still, raw).map_err(|e| e.to_string()).map(|path| (path, thumbnail(&still)));
                     let _ = input.send(Msg::Saved(result));
                 });
             }
             Msg::Camera(Event::Error(e)) => {
                 log::warn!("{e}");
                 if self.session.is_none() {
-                    self.show_status(w, "dialog-error-symbolic", &gettext("Camera Error"), &e, true);
+                    let (title, description) = if e.contains("busy") {
+                        (gettext("Camera Busy"), gettext("Another app is using this camera. Close it, then try again."))
+                    } else {
+                        (gettext("Camera Unavailable"), e.clone())
+                    };
+                    self.show_status(w, Some("camera-disabled-symbolic"), &title, Some(&description), self.backend.is_some());
                 } else {
                     w.toasts.add_toast(adw::Toast::new(&e));
                 }
             }
             Msg::SwitchCamera => {
-                if let Some(s) = &self.session {
-                    let next = (s.camera + 1) % self.cameras.len().max(1);
-                    w.capture.set_sensitive(false);
-                    w.viewfinder.set_texture(None);
-                    self.session = None;
-                    self.open(next, None);
+                if self.session.is_some() && self.recorder.is_none() && self.cameras.len() > 1 {
+                    let next = (self.camera + 1) % self.cameras.len();
+                    if w.switch.has_css_class("flipped") { w.switch.remove_css_class("flipped") } else { w.switch.add_css_class("flipped") }
+                    self.reopen(w, next, None);
                 }
             }
-            Msg::SelectMode(i) => {
+            Msg::SelectModeIndex(i) => {
+                if let Some(mode) = self.session.as_ref().and_then(|s| s.modes.get(i as usize).copied()) {
+                    sender.input(Msg::SelectMode(mode));
+                }
+            }
+            Msg::SelectMode(mode) => {
                 if let Some(s) = &self.session
-                    && let Some(mode) = s.modes.get(i as usize).copied()
+                    && s.modes.contains(&mode)
                     && mode != s.mode
+                    && self.recorder.is_none()
                 {
-                    w.capture.set_sensitive(false);
-                    w.viewfinder.set_texture(None);
                     let camera = s.camera;
-                    self.session = None;
-                    self.open(camera, Some(mode));
+                    self.reopen(w, camera, Some(mode));
                 }
             }
-            Msg::Capture if self.video => {
-                let Some(session) = &self.session else { return };
-                if let Some(recorder) = self.recorder.take() {
-                    w.capture.set_sensitive(false);
-                    if let Some(b) = self.backend() {
-                        b.send(Cmd::Record(None));
+            Msg::Capture => {
+                if let Some((_, source)) = self.countdown.take() {
+                    source.remove();
+                    w.countdown.set_visible(false);
+                    return;
+                }
+                let recording = self.recorder.is_some() || self.record_started.is_some();
+                if self.timer > 0 && self.session.is_some() && !recording && !self.saving {
+                    let s = sender.clone();
+                    let source = glib::timeout_add_seconds_local(1, move || {
+                        s.input(Msg::Countdown);
+                        glib::ControlFlow::Continue
+                    });
+                    w.countdown.set_label(&self.timer.to_string());
+                    w.countdown.set_visible(true);
+                    self.countdown = Some((self.timer, source));
+                    return;
+                }
+                self.shoot(w, &sender);
+            }
+            Msg::Countdown => {
+                if let Some((n, source)) = self.countdown.take() {
+                    if n > 1 {
+                        w.countdown.set_label(&(n - 1).to_string());
+                        self.countdown = Some((n - 1, source));
+                    } else {
+                        source.remove();
+                        w.countdown.set_visible(false);
+                        self.shoot(w, &sender);
                     }
-                    let input = sender.input_sender().clone();
-                    std::thread::spawn(move || {
-                        let _ = input.send(Msg::RecordingDone(recorder.stop().map_err(|e| e.to_string())));
-                    });
-                } else if self.record_started.is_none() {
-                    w.capture.set_sensitive(false);
-                    self.record_started = Some(Instant::now());
-                    let (view, fourcc, rotation) = (session.view, session.fourcc, session.info.rotation);
-                    let fps = self.frame_duration.map(|us| 1e6 / us).or(session.fps.map(|f| f.1)).unwrap_or(30.0);
-                    let input = sender.input_sender().clone();
-                    std::thread::spawn(move || {
-                        let r = Recorder::start(view.width, view.height, fourcc, fps, rotation).map(Arc::new).map_err(|e| e.to_string());
-                        let _ = input.send(Msg::RecordingStarted(r));
-                    });
+                }
+            }
+            Msg::CycleTimer => {
+                self.timer = match self.timer {
+                    0 => 3,
+                    3 => 10,
+                    _ => 0,
+                };
+                if let Some(s) = &self.settings {
+                    let _ = s.set_int("timer", self.timer as i32);
+                }
+                self.show_timer(w);
+            }
+            Msg::Grid(on) => w.viewfinder.set_grid(on),
+            Msg::TapFocus(x, y) => {
+                let (Some(session), Some(panel)) = (&self.session, &self.panel) else { return };
+                let Some(trigger) = session.controls.iter().find(|c| c.name == "AfTrigger") else { return };
+                if w.viewfinder.to_sensor(x, y).is_none() {
+                    return;
+                }
+                // ponytail: no AfWindows yet, so the scan uses the pipeline's
+                // default area; send them for cameras that list the control.
+                // A tap is one scan: continuous focus would wander off again.
+                if panel.has("AfMode") && !panel.select("AfMode", "Auto") {
+                    return;
+                }
+                let start = trigger.enums.iter().find(|(_, n)| n.ends_with("Start")).map(|(v, _)| *v).unwrap_or(0);
+                if let Some(b) = self.backend() {
+                    b.send(Cmd::SetControl { id: trigger.id, value: vec![start as f64] });
+                }
+                let (rw, rh) = (w.focus_ring.width_request() as f64, w.focus_ring.height_request() as f64);
+                w.focus_layer.move_(&w.focus_ring, x - rw / 2.0, y - rh / 2.0);
+                for class in ["focused", "failed"] {
+                    w.focus_ring.remove_css_class(class);
+                }
+                w.focus_ring.add_css_class("scanning");
+                w.focus_ring.set_visible(true);
+                self.focusing = true;
+                self.focus_generation += 1;
+                let (s, generation) = (sender.clone(), self.focus_generation);
+                glib::timeout_add_local_once(Duration::from_secs(4), move || s.input(Msg::HideFocus(generation)));
+            }
+            Msg::HideFocus(generation) => {
+                if generation == self.focus_generation {
+                    self.focusing = false;
+                    w.focus_ring.set_visible(false);
                 }
             }
             Msg::RecordingStarted(result) => {
@@ -649,19 +1133,13 @@ impl Component for App {
                         }
                         self.recorder = Some(recorder);
                         self.record_started = Some(Instant::now());
-                        w.capture.add_css_class("recording");
-                        w.capture.set_icon_name("media-playback-stop-symbolic");
-                        w.capture.set_tooltip_text(Some(&gettext("Stop Recording")));
-                        w.modes.set_sensitive(false);
-                        w.switch.set_sensitive(false);
-                        w.mode_row.set_sensitive(false);
                         w.record_time.set_label("0:00");
-                        w.record_time.set_visible(true);
+                        self.set_recording_ui(w, true);
                         let s = sender.clone();
-                        glib::timeout_add_seconds_local(1, move || {
+                        self.record_tick = Some(glib::timeout_add_local(Duration::from_millis(500), move || {
                             s.input(Msg::Tick);
                             glib::ControlFlow::Continue
-                        });
+                        }));
                     }
                     Err(e) => {
                         log::warn!("recording did not start: {e}");
@@ -678,19 +1156,17 @@ impl Component for App {
             }
             Msg::RecordingDone(result) => {
                 self.record_started = None;
+                if let Some(source) = self.record_tick.take() {
+                    source.remove();
+                }
                 w.capture.set_sensitive(true);
-                w.capture.remove_css_class("recording");
-                w.capture.set_icon_name("media-record-symbolic");
-                w.capture.set_tooltip_text(Some(&gettext("Start Recording")));
-                w.modes.set_sensitive(true);
-                w.switch.set_sensitive(true);
-                w.mode_row.set_sensitive(true);
-                w.record_time.set_visible(false);
+                self.set_recording_ui(w, false);
                 match result {
                     Ok(path) => {
                         self.last_capture = Some(path);
                         w.gallery.set_sensitive(true);
-                        w.toasts.add_toast(adw::Toast::new(&gettext("Video saved")));
+                        let toast = adw::Toast::builder().title(gettext("Video saved")).button_label(gettext("_Open")).action_name("app.open-last").build();
+                        w.toasts.add_toast(toast);
                     }
                     Err(e) => {
                         log::warn!("recording failed: {e}");
@@ -700,13 +1176,20 @@ impl Component for App {
             }
             Msg::SetVideo(video) => {
                 self.video = video;
+                if let Some(s) = &self.settings {
+                    let _ = s.set_boolean("video", video);
+                }
+                if let Some(a) = relm4::main_application().lookup_action("mode") {
+                    a.change_state(&(if video { "video" } else { "photo" }).to_variant());
+                }
+                let tip = if video { gettext("Start Recording") } else { gettext("Take Photo") };
                 w.capture.set_icon_name(if video { "media-record-symbolic" } else { "camera-photo-symbolic" });
-                w.capture.set_tooltip_text(Some(&if video { gettext("Start Recording") } else { gettext("Take Photo") }));
+                w.capture.set_tooltip_text(Some(&tip));
+                label(&w.capture, &tip);
                 if video { w.capture.add_css_class("video") } else { w.capture.remove_css_class("video") }
+                w.chips.fps.set_visible(video && self.panel.as_ref().is_some_and(|p| p.has("FrameDurationLimits")));
                 // Video wants a 16:9 mode, photos the full sensor.
                 if let Some(s) = &self.session {
-                    let ratio = |m: &Mode| m.width as f64 / m.height as f64;
-                    let wide = |m: &Mode| (ratio(m) - 16.0 / 9.0).abs() < 0.05;
                     let target = if video {
                         (!wide(&s.mode)).then(|| s.modes.iter().copied().filter(|m| wide(m) && m.width <= 4096).max_by_key(|m| m.width))
                     } else {
@@ -714,57 +1197,53 @@ impl Component for App {
                     };
                     if let Some(Some(mode)) = target {
                         let camera = s.camera;
-                        w.capture.set_sensitive(false);
-                        w.viewfinder.set_texture(None);
-                        self.session = None;
-                        self.open(camera, Some(mode));
+                        self.reopen(w, camera, Some(mode));
                     }
                 }
             }
-            Msg::Capture => {
-                if self.session.is_some() && !self.saving {
-                    self.saving = true;
-                    w.capture.set_sensitive(false);
-                    w.viewfinder.add_css_class("flash");
-                    let vf = w.viewfinder.clone();
-                    glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || vf.remove_css_class("flash"));
-                    if let Some(b) = self.backend() {
-                        b.send(Cmd::Capture);
-                    }
+            Msg::Found(path, thumb) => {
+                if self.last_capture.is_none() {
+                    self.show_thumbnail(w, path, thumb);
                 }
             }
             Msg::Saved(result) => {
+                w.saving_spinner.set_visible(false);
                 self.saving = false;
                 w.capture.set_sensitive(self.session.is_some());
                 match result {
-                    Ok((path, thumb, tw, th, rotation)) => {
-                        let bytes = glib::Bytes::from_owned(thumb);
-                        let tex = gdk::MemoryTexture::new(tw as i32, th as i32, gdk::MemoryFormat::R8g8b8, &bytes, tw as usize * 3);
-                        w.thumbnail.set_texture(Some(tex.upcast()));
-                        w.thumbnail.set_rotation(rotation, false);
-                        w.gallery.set_sensitive(true);
-                        self.last_capture = Some(path);
+                    Ok((path, thumb)) => {
+                        self.show_thumbnail(w, path, thumb);
+                        w.gallery.add_css_class("new");
+                        let g = w.gallery.clone();
+                        glib::timeout_add_local_once(Duration::from_millis(400), move || g.remove_css_class("new"));
                     }
                     Err(e) => w.toasts.add_toast(adw::Toast::new(&format!("{}: {e}", gettext("Could not save photo")))),
                 }
             }
             Msg::OpenLast => {
                 if let Some(path) = &self.last_capture {
-                    gtk::FileLauncher::new(Some(&gio::File::for_path(path))).launch(
-                        Some(&w.window),
-                        None::<&gio::Cancellable>,
-                        |_| {},
-                    );
+                    gtk::FileLauncher::new(Some(&gio::File::for_path(path))).launch(Some(&w.window), None::<&gio::Cancellable>, |_| {});
                 }
             }
         }
     }
 }
 
-/// A small RGB thumbnail by point sampling the still.
-fn thumbnail(still: &Still) -> (Vec<u8>, u32, u32) {
-    let (tw, th) = (96u32, (96 * still.height / still.width.max(1)).max(1));
-    let mut out = Vec::with_capacity((tw * th * 3) as usize);
+impl App {
+    fn show_thumbnail(&mut self, w: &Widgets, path: PathBuf, thumb: Thumb) {
+        let bytes = glib::Bytes::from_owned(thumb.rgba);
+        let tex = gdk::MemoryTexture::new(thumb.width as i32, thumb.height as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, thumb.width as usize * 4);
+        w.thumbnail.set_texture(Some(tex.upcast()));
+        w.thumbnail.set_rotation(thumb.rotation, false);
+        w.gallery.set_sensitive(true);
+        self.last_capture = Some(path);
+    }
+}
+
+/// A small RGBA thumbnail by point sampling the still.
+fn thumbnail(still: &Still) -> Thumb {
+    let (tw, th) = (128u32, (128 * still.height / still.width.max(1)).max(1));
+    let mut rgba = Vec::with_capacity((tw * th * 4) as usize);
     let bgr = matches!(&still.fourcc.to_le_bytes(), b"XR24" | b"AR24");
     for y in 0..th {
         for x in 0..tw {
@@ -773,11 +1252,11 @@ fn thumbnail(still: &Still) -> (Vec<u8>, u32, u32) {
             let i = sy * still.stride as usize + sx * 4;
             let px = still.rgba.get(i..i + 3).unwrap_or(&[0, 0, 0]);
             if bgr {
-                out.extend([px[2], px[1], px[0]]);
+                rgba.extend([px[2], px[1], px[0], 255]);
             } else {
-                out.extend_from_slice(px);
+                rgba.extend([px[0], px[1], px[2], 255]);
             }
         }
     }
-    (out, tw, th)
+    Thumb { rgba, width: tw, height: th, rotation: still.info.rotation }
 }

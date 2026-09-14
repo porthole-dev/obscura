@@ -2,4 +2,5 @@ data/io.github.jertlok.Obscura.desktop.in
 data/io.github.jertlok.Obscura.metainfo.xml.in
 data/io.github.jertlok.Obscura.gschema.xml
 src/app.rs
+src/camera.rs
 src/controls.rs

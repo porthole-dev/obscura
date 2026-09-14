@@ -18,6 +18,7 @@ mod imp {
         pub mirror: Cell<bool>,
         /// Fill the widget and crop, instead of fitting inside it.
         pub cover: Cell<bool>,
+        pub grid: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -41,29 +42,42 @@ mod imp {
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             let Some(texture) = self.texture.borrow().clone() else { return };
-            let (w, h) = (self.obj().width() as f32, self.obj().height() as f32);
-            let rotation = self.rotation.get().rem_euclid(360);
-            let (tw, th) = (texture.width() as f32, texture.height() as f32);
-            // Size of the upright image, then scaled to fit ("contain").
-            let (uw, uh) = if rotation % 180 == 0 { (tw, th) } else { (th, tw) };
-            let scale = if self.cover.get() { (w / uw).max(h / uh) } else { (w / uw).min(h / uh) };
+            let Some(l) = self.obj().layout() else { return };
+            let (tw, th) = (texture.width() as f32 * l.scale, texture.height() as f32 * l.scale);
             snapshot.save();
-            snapshot.translate(&graphene::Point::new(w / 2.0, h / 2.0));
+            snapshot.translate(&graphene::Point::new(l.x + l.width / 2.0, l.y + l.height / 2.0));
             // Mirror the upright picture, not the sensor image: after a
             // quarter turn a sensor-space mirror is an upside-down flip.
             if self.mirror.get() {
                 snapshot.scale(-1.0, 1.0);
             }
-            snapshot.rotate(rotation as f32);
-            let (dw, dh) = (tw * scale, th * scale);
+            snapshot.rotate(self.rotation.get().rem_euclid(360) as f32);
             snapshot.append_scaled_texture(
                 &texture,
                 gtk::gsk::ScalingFilter::Linear,
-                &graphene::Rect::new(-dw / 2.0, -dh / 2.0, dw, dh),
+                &graphene::Rect::new(-tw / 2.0, -th / 2.0, tw, th),
             );
             snapshot.restore();
+            if self.grid.get() {
+                let colour = gdk::RGBA::new(1.0, 1.0, 1.0, 0.35);
+                for i in 1..3 {
+                    let f = i as f32 / 3.0;
+                    snapshot.append_color(&colour, &graphene::Rect::new(l.x + l.width * f, l.y, 1.0, l.height));
+                    snapshot.append_color(&colour, &graphene::Rect::new(l.x, l.y + l.height * f, l.width, 1.0));
+                }
+            }
         }
     }
+}
+
+/// Where the upright picture lands in the widget.
+pub struct Layout {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// Widget pixels per image pixel.
+    pub scale: f32,
 }
 
 glib::wrapper! {
@@ -95,17 +109,33 @@ impl Viewfinder {
         self.queue_draw();
     }
 
+    pub fn set_grid(&self, grid: bool) {
+        self.imp().grid.set(grid);
+        self.queue_draw();
+    }
+
+    /// Fitted (or, with cover, filled) and centred; with room to spare
+    /// vertically the picture sits at the top, like phone cameras, leaving
+    /// the bottom to the capture controls.
+    pub fn layout(&self) -> Option<Layout> {
+        let texture = self.imp().texture.borrow().clone()?;
+        let (w, h) = (self.width() as f32, self.height() as f32);
+        let (tw, th) = (texture.width() as f32, texture.height() as f32);
+        let (uw, uh) = if self.imp().rotation.get().rem_euclid(180) == 0 { (tw, th) } else { (th, tw) };
+        let scale = if self.imp().cover.get() { (w / uw).max(h / uh) } else { (w / uw).min(h / uh) };
+        let (width, height) = (uw * scale, uh * scale);
+        let y = if height < h { 0.0 } else { (h - height) / 2.0 };
+        Some(Layout { x: (w - width) / 2.0, y, width, height, scale })
+    }
+
     /// Where a point on the widget lands on the sensor image, normalised to
     /// 0..1 in sensor coordinates, or None outside the image.
     pub fn to_sensor(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let texture = self.imp().texture.borrow().clone()?;
+        let l = self.layout()?;
         let rotation = self.imp().rotation.get().rem_euclid(360);
-        let (w, h) = (self.width() as f64, self.height() as f64);
-        let (tw, th) = (texture.width() as f64, texture.height() as f64);
-        let (uw, uh) = if rotation % 180 == 0 { (tw, th) } else { (th, tw) };
-        let scale = (w / uw).min(h / uh);
-        // Centered, in upright image pixels.
-        let (mut u, v) = ((x - w / 2.0) / scale, (y - h / 2.0) / scale);
+        // Centred, in upright image pixels.
+        let mut u = (x - (l.x + l.width / 2.0) as f64) / l.scale as f64;
+        let v = (y - (l.y + l.height / 2.0) as f64) / l.scale as f64;
         if self.imp().mirror.get() {
             u = -u;
         }
@@ -116,7 +146,8 @@ impl Viewfinder {
             270 => (-v, u),
             _ => (u, v),
         };
-        let (nx, ny) = (sx / tw + 0.5, sy / th + 0.5);
+        let (tw, th) = if rotation % 180 == 0 { (l.width, l.height) } else { (l.height, l.width) };
+        let (nx, ny) = (sx / (tw / l.scale) as f64 + 0.5, sy / (th / l.scale) as f64 + 0.5);
         ((0.0..=1.0).contains(&nx) && (0.0..=1.0).contains(&ny)).then_some((nx, ny))
     }
 }
