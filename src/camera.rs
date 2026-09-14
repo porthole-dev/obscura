@@ -311,12 +311,19 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit:
     while let Some(msg) = backlog.pop_front().or_else(|| rx.recv().ok()) {
         match msg {
             Internal::Cmd(Cmd::Open { camera, mode, video }) => {
-                if let Some(live) = session.take() {
-                    backlog.extend(live.close(&rx, &slot));
-                }
-                let Some(cam) = cameras.get(camera) else {
-                    emit(Event::Error(format!("no camera {camera}")));
-                    continue;
+                // The same camera stays acquired: a new mode is a reconfigure.
+                let kept = session.take().and_then(|live| {
+                    let index = live.info.camera;
+                    let (cam, deferred) = live.close(&rx, &slot);
+                    backlog.extend(deferred);
+                    (index == camera).then_some(cam)
+                });
+                let cam = match kept.map(Ok).unwrap_or_else(|| acquire(&cameras, camera)) {
+                    Ok(cam) => cam,
+                    Err(e) => {
+                        emit(Event::Error(e));
+                        continue;
+                    }
                 };
                 let purpose = if video { Purpose::Video } else { Purpose::Preview };
                 match Live::open(cam, camera, infos[camera].clone(), mode, purpose, &[], &tx) {
@@ -347,20 +354,19 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit:
                     let (index, info, mode, user) = (live.info.camera, live.info.info.clone(), live.info.mode, live.user.clone());
                     let held = seed(&live.info.controls, &live.meta);
                     let expect = (live.meta.get("ExposureTime"), live.meta.get("AnalogueGain"));
-                    backlog.extend(live.close(&rx, &slot));
+                    let (cam, deferred) = live.close(&rx, &slot);
+                    backlog.extend(deferred);
                     let initial: Vec<_> = user.iter().cloned().chain(held).collect();
-                    match cameras.get(index).map(|cam| Live::open(cam, index, info.clone(), Some(mode), Purpose::Still, &initial, &tx)) {
-                        Some(Ok((mut still, _))) => {
+                    match Live::open(cam, index, info.clone(), Some(mode), Purpose::Still, &initial, &tx) {
+                        Ok((mut still, _)) => {
                             still.capture_next = true;
                             still.expect = expect;
                             still.user = user;
                             session = Some(still);
                         }
-                        other => {
-                            if let Some(Err(e)) = other {
-                                emit(Event::Error(e));
-                            }
-                            session = cameras.get(index).and_then(|cam| Live::open(cam, index, info, Some(mode), Purpose::Preview, &user, &tx).ok()).map(|(l, _)| l);
+                        Err(e) => {
+                            emit(Event::Error(e));
+                            session = acquire(&cameras, index).and_then(|cam| Live::open(cam, index, info, Some(mode), Purpose::Preview, &user, &tx)).ok().map(|(l, _)| l);
                         }
                     }
                 }
@@ -378,7 +384,7 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit:
             Internal::Cmd(Cmd::CopyFrames(on)) => copy_frames = on,
             Internal::Cmd(Cmd::Close) => {
                 if let Some(live) = session.take() {
-                    backlog.extend(live.close(&rx, &slot));
+                    backlog.extend(live.close(&rx, &slot).1);
                 }
             }
             Internal::Done(req) => match session.as_mut() {
@@ -389,14 +395,14 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit:
                     if live.purpose == Purpose::Still && !live.capture_next {
                         let live = session.take().unwrap();
                         let (index, info, mode, user) = (live.info.camera, live.info.info.clone(), live.info.mode, live.user.clone());
-                        backlog.extend(live.close(&rx, &slot));
-                        match cameras.get(index).map(|cam| Live::open(cam, index, info, Some(mode), Purpose::Preview, &user, &tx)) {
-                            Some(Ok((live, _))) => {
+                        let (cam, deferred) = live.close(&rx, &slot);
+                        backlog.extend(deferred);
+                        match Live::open(cam, index, info, Some(mode), Purpose::Preview, &user, &tx) {
+                            Ok((live, _)) => {
                                 perf!("viewfinder-restored");
                                 session = Some(live);
                             }
-                            Some(Err(e)) => emit(Event::Error(e)),
-                            None => {}
+                            Err(e) => emit(Event::Error(e)),
                         }
                     }
                 }
@@ -488,15 +494,22 @@ fn seed(controls: &[ControlDesc], meta: &Metadata) -> Vec<(u32, Vec<f64>)> {
     out
 }
 
+fn acquire(cameras: &libcamera::camera_manager::CameraList<'static>, index: usize) -> Result<ActiveCamera<'static>, String> {
+    let cam = cameras.get(index).ok_or_else(|| format!("no camera {index}"))?;
+    let active = cam.acquire().map_err(|e| format!("cannot acquire camera: {e}"))?;
+    perf!("camera-acquired", "camera={index}");
+    Ok(active)
+}
+
 /// Whether a Still session's frame shows the held exposure and gain (within
-/// 10%). Without anything to compare, the third frame will do.
+/// 10%). With nothing held, the first frame will do.
 // ponytail: eight frames is the patience for a held exposure to show up; a
 // camera that ignores manual controls still gets its photo.
 fn settled(expect: (Option<f64>, Option<f64>), exposure: Option<f64>, gain: Option<f64>, frames: u32) -> bool {
     let near = |want: Option<f64>, got: Option<f64>| match (want, got) {
         (Some(w), Some(g)) => (g - w).abs() <= w.abs() * 0.1 + 1e-3,
         (Some(_), None) => false,
-        _ => frames >= 3,
+        _ => frames >= 1,
     };
     frames >= 8 || (near(expect.0, exposure) && near(expect.1, gain))
 }
@@ -513,7 +526,7 @@ fn control_value(desc: &ControlDesc, value: &[f64]) -> Option<ControlValue> {
 
 impl Live {
     fn open(
-        cam: libcamera::camera::Camera<'static>,
+        mut cam: ActiveCamera<'static>,
         index: usize,
         mut info: CameraInfo,
         mode: Option<Mode>,
@@ -521,8 +534,6 @@ impl Live {
         initial: &[(u32, Vec<f64>)],
         tx: &Sender<Internal>,
     ) -> Result<(Self, Session), String> {
-        let mut cam = cam.acquire().map_err(|e| format!("cannot acquire camera: {e}"))?;
-        perf!("camera-acquired", "camera={index}");
         let modes = sensor_modes(&cam);
         let photo = mode.filter(|m| modes.contains(m)).or_else(|| modes.first().copied());
         let view_mode = match (purpose, photo) {
@@ -804,7 +815,10 @@ impl Live {
     /// Stop, then wait for the requests the UI still holds so no buffer is
     /// freed under a texture.
     /// Returns the commands that arrived meanwhile.
-    fn close(mut self, rx: &Receiver<Internal>, slot: &FrameSlot) -> Vec<Internal> {
+    /// Stop, take back every request, free the buffers; the camera stays
+    /// acquired for whoever opens next. Also returns the commands that
+    /// arrived meanwhile.
+    fn close(mut self, rx: &Receiver<Internal>, slot: &FrameSlot) -> (ActiveCamera<'static>, Vec<Internal>) {
         let _ = self.cam.stop();
         // A frame waiting in the slot is one of ours.
         drop(slot.frame.lock().unwrap().take());
@@ -825,7 +839,9 @@ impl Live {
                 }
             }
         }
-        deferred
+        let Live { cam, _alloc, .. } = self;
+        drop(_alloc);
+        (cam, deferred)
     }
 }
 
@@ -1062,8 +1078,7 @@ mod tests {
         assert!(settled(held, Some(20500.0), Some(4.1), 2));
         assert!(!settled(held, None, None, 5));
         assert!(settled(held, Some(33333.0), Some(1.0), 8));
-        assert!(!settled((None, None), None, None, 2));
-        assert!(settled((None, None), None, None, 3));
+        assert!(settled((None, None), None, None, 1));
     }
 
     #[test]
