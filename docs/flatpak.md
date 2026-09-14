@@ -1,6 +1,19 @@
 # Flatpak and Flathub: design note
 
-Status: design only. Nothing here is implemented yet.
+Status: the PipeWire backend (`src/pipewire.rs`, built on GStreamer's
+PipeWire elements rather than pipewire-rs) and two manifests exist; node
+controls through PipeWire do not yet. Build and test:
+
+    flatpak run org.flatpak.Builder --user --install --force-clean target/flatpak/build build-aux/flatpak/io.github.jertlok.Obscura.yml
+    flatpak run org.flatpak.Builder --user --install --force-clean target/flatpak/build-devel build-aux/flatpak/io.github.jertlok.Obscura.Devel.yml
+    build-aux/flatpak/check.sh          # the sandboxed build in the headless session
+    build-aux/flatpak/check.sh devel    # the Devel build with libcamera's virtual cameras
+
+`build-aux/flatpak/cargo-sources.json` comes from flatpak-builder-tools'
+`flatpak-cargo-generator.py Cargo.lock`; regenerate it whenever Cargo.lock
+changes. The manifests build libcamera v0.7.2 from upstream, need the
+`rust-stable` and `llvm21` SDK extensions (libcamera-sys runs bindgen), and
+install PyYAML and ply for libcamera's code generators.
 
 Obscura today opens cameras with libcamera directly, which needs the
 `/dev/media*` and `/dev/video*` nodes. A Flathub build cannot have them: the

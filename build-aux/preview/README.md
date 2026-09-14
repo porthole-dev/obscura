@@ -78,3 +78,11 @@ skipped with a note.
 The virtual pipeline cannot model everything: it has no raw stream,
 controls or exposure metadata, and no autofocus or rotation, so the lock is
 refused (and checked to be) and the taimen fake still covers those.
+
+## Flatpak builds
+
+`build-aux/flatpak/check.sh` runs an installed Flatpak build in the same
+headless session: the sandboxed build must start and show a camera state
+(there is no portal there, so "No Camera Access"), and with `devel` the
+Devel build must find libcamera's virtual cameras, show a frame and switch
+cameras. See docs/flatpak.md for building them.

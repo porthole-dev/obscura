@@ -1,0 +1,58 @@
+# A development build with direct camera access and every control, for
+# devices and testing: --device=all and a full libcamera (simple and UVC
+# pipelines with the software ISP, and the virtual pipeline for tests,
+# which LIBCAMERA_PIPELINES_MATCH_LIST keeps out unless asked for).
+# Not for Flathub: it needs --device=all and network access while building
+# libcamera's libyuv subproject.
+#   flatpak-builder --user --install --force-clean build-aux/flatpak/build-devel build-aux/flatpak/io.github.jertlok.Obscura.Devel.yml
+id: io.github.jertlok.Obscura
+branch: devel
+runtime: org.gnome.Platform
+runtime-version: "49"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm21
+command: obscura
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=all
+  - --socket=pulseaudio
+  - --filesystem=xdg-pictures/Obscura:create
+  - --filesystem=xdg-videos/Obscura:create
+  - --talk-name=org.sigxcpu.Feedback
+  - --system-talk-name=net.hadess.SensorProxy
+  - --env=OBSCURA_BACKEND=libcamera
+  - --env=LIBCAMERA_PIPELINES_MATCH_LIST=simple,uvcvideo
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/doc
+modules:
+  - python-deps.yml
+  - name: libcamera
+    buildsystem: meson
+    build-options:
+      build-args: [--share=network]
+    config-opts:
+      - -Dpipelines=simple,uvcvideo,virtual
+      - -Dipas=simple
+      - -Dcam=disabled
+      - -Dqcam=disabled
+      - -Dgstreamer=disabled
+      - -Dv4l2=false
+      - -Dpycamera=disabled
+      - -Ddocumentation=disabled
+      - -Dlc-compliance=disabled
+      - -Dtest=false
+    post-install:
+      - install -Dm644 "${FLATPAK_BUILDER_BUILDDIR}/virtual.yaml" /app/share/libcamera/pipeline/virtual/virtual.yaml
+    sources:
+      - type: git
+        url: https://git.libcamera.org/libcamera/libcamera.git
+        tag: v0.7.2
+      - type: file
+        path: ../preview/container/virtual.yaml
+  - obscura-module.yml

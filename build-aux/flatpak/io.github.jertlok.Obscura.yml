@@ -1,0 +1,46 @@
+# The sandboxed build, as Flathub would take it: cameras come through the
+# Camera portal and PipeWire (src/pipewire.rs). libcamera is only linked,
+# built with one small pipeline handler and no IPA modules.
+#   flatpak-builder --user --install --force-clean build-aux/flatpak/build build-aux/flatpak/io.github.jertlok.Obscura.yml
+id: io.github.jertlok.Obscura
+runtime: org.gnome.Platform
+runtime-version: "49"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm21
+command: obscura
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  - --socket=pulseaudio
+  - --filesystem=xdg-pictures/Obscura:create
+  - --filesystem=xdg-videos/Obscura:create
+  - --talk-name=org.sigxcpu.Feedback
+  - --system-talk-name=net.hadess.SensorProxy
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/doc
+modules:
+  - python-deps.yml
+  - name: libcamera
+    buildsystem: meson
+    config-opts:
+      - -Dpipelines=uvcvideo
+      - -Dipas=
+      - -Dcam=disabled
+      - -Dqcam=disabled
+      - -Dgstreamer=disabled
+      - -Dv4l2=false
+      - -Dpycamera=disabled
+      - -Ddocumentation=disabled
+      - -Dlc-compliance=disabled
+      - -Dtest=false
+    sources:
+      - type: git
+        url: https://git.libcamera.org/libcamera/libcamera.git
+        tag: v0.7.2
+  - obscura-module.yml

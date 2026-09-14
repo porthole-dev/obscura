@@ -19,7 +19,9 @@ pub enum Access {
 pub async fn request_access() -> Access {
     // Development only: a nested or headless compositor has no access dialog,
     // and the portal reports that exactly like a user saying no.
-    if !ashpd::is_sandboxed() && std::env::var_os("OBSCURA_SKIP_PORTAL").is_some() {
+    // Also in a sandbox: a development Flatpak with device access has
+    // nothing to ask a missing portal for.
+    if std::env::var_os("OBSCURA_SKIP_PORTAL").is_some() {
         return Access::Unavailable("OBSCURA_SKIP_PORTAL is set".into());
     }
     // Host apps have no app id of their own; registering gives the portal

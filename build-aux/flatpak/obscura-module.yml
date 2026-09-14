@@ -1,0 +1,14 @@
+name: obscura
+buildsystem: meson
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm21/bin
+  env:
+    CARGO_HOME: /run/build/obscura/cargo
+    CARGO_NET_OFFLINE: "true"
+    # libcamera-sys generates its bindings with libclang.
+    LIBCLANG_PATH: /usr/lib/sdk/llvm21/lib
+sources:
+  - type: dir
+    path: ../..
+    skip: [target, .git, .flatpak-builder, build-aux/flatpak/build, build-aux/flatpak/repo]
+  - cargo-sources.json

@@ -39,9 +39,13 @@ start) # [WIDTH HEIGHT]; OBSCURA_FAKE=taimen|denied|nocamera|busy (default taime
 	"$0" stop 2>/dev/null || true
 	rm -rf "$state" && mkdir -p "$state/shots" "$state/config/glib-2.0/settings" "$state/schemas"
 	bin=$(binary)
-	[ -x "$bin" ] || { echo "no preview build at $bin: run '$0 build'" >&2; exit 1; }
+	# PREVIEW_COMMAND runs something else in the session instead, such as
+	# `flatpak run io.github.jertlok.Obscura//devel`.
+	[ -n "${PREVIEW_COMMAND:-}" ] || [ -x "$bin" ] || { echo "no preview build at $bin: run '$0 build'" >&2; exit 1; }
 	run=()
-	if ! native; then
+	if [ -n "${PREVIEW_COMMAND:-}" ]; then
+		: # a Flatpak or another build brings its own schemas and fonts
+	elif ! native; then
 		run=(qemu-aarch64-static -L "$sysroot")
 		cp "$sysroot"/usr/share/glib-2.0/schemas/*.xml "$state/schemas/"
 		# The sysroot has no fonts; lend it the host's.
@@ -89,9 +93,9 @@ start) # [WIDTH HEIGHT]; OBSCURA_FAKE=taimen|denied|nocamera|busy (default taime
 		sleep 2
 	fi
 	env -u DISPLAY WAYLAND_DISPLAY="$wl" GDK_BACKEND=wayland GSK_RENDERER="${GSK_RENDERER:-cairo}" NO_AT_BRIDGE=1 \
-		GSETTINGS_SCHEMA_DIR="$state/schemas" GSETTINGS_BACKEND=keyfile XDG_CONFIG_HOME="$state/config" HOME="$state" \
+		GSETTINGS_SCHEMA_DIR="$state/schemas" GSETTINGS_BACKEND=keyfile XDG_CONFIG_HOME="$state/config" HOME="${PREVIEW_HOME:-$state}" \
 		OBSCURA_FAKE="${OBSCURA_FAKE-taimen}" OBSCURA_PERF=1 RUST_LOG="${RUST_LOG:-warn}" "${lang_env[@]}" \
-		"${run[@]}" "$bin" >"$state/app.log" 2>&1 &
+		${PREVIEW_COMMAND:-"${run[@]}" "$bin"} >"$state/app.log" 2>&1 &
 	{ echo "APP_PID=$!"; echo "export DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"; echo "WIDTH=$width HEIGHT=$height"; } >> "$state/env"
 	for _ in $(seq 600); do grep -q "obscura-perf .* window-painted" "$state/app.log" 2>/dev/null && break; sleep 0.1; done
 	grep -q "window-painted" "$state/app.log" || { echo "the app did not paint; see $state/app.log" >&2; exit 1; }
