@@ -167,6 +167,8 @@ pub struct Panel {
     values: Rc<RefCell<HashMap<String, Vec<f64>>>>,
     subtitles: HashMap<String, adw::ActionRow>,
     enums: HashMap<String, Vec<(i32, String)>>,
+    /// Move a single-value slider, as if dragged.
+    setters: HashMap<String, Rc<dyn Fn(f64)>>,
     /// Rows lent to the app's Capture group, taken back on drop.
     capture: (adw::PreferencesGroup, Vec<gtk::Widget>),
 }
@@ -210,6 +212,7 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, capture: &adw::P
     let mut enums = HashMap::new();
     let mut resets: HashMap<Group, Vec<Reset>> = HashMap::new();
     let mut lent = Vec::new();
+    let mut setters = HashMap::new();
     // Set once every row exists, so a change can re-evaluate dependencies.
     let panel_cell: Rc<RefCell<Option<std::rc::Weak<Panel>>>> = Rc::default();
 
@@ -274,7 +277,8 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, capture: &adw::P
                         (2, "ColourGains", 1) => gettext("Blue"),
                         _ => format!("{} {}", title, i + 1),
                     };
-                    let (row, reset) = slider_row(&row_title, c, current.borrow()[i], {
+                    let default = current.borrow()[i];
+                    let (row, setter) = slider_row(&row_title, c, default, {
                         let current = current.clone();
                         let emit = emit.clone();
                         move |v| {
@@ -282,7 +286,10 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, capture: &adw::P
                             emit(current.borrow().clone());
                         }
                     });
-                    row_resets.push(reset);
+                    if c.len == 1 {
+                        setters.insert(c.name.clone(), setter.clone());
+                    }
+                    row_resets.push(Rc::new(move || setter(default)) as Reset);
                     if i == 0 {
                         subtitles.insert(c.name.clone(), row.clone());
                     }
@@ -323,7 +330,7 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, capture: &adw::P
         prefs[&group].set_header_suffix(Some(&button));
     }
 
-    let panel = Rc::new(Panel { widget, rows, values, subtitles, enums, capture: (capture.clone(), lent) });
+    let panel = Rc::new(Panel { widget, rows, values, subtitles, enums, setters, capture: (capture.clone(), lent) });
     panel_cell.replace(Some(Rc::downgrade(&panel)));
     panel.update_dependencies();
     panel
@@ -333,7 +340,7 @@ fn padded(def: &[f64], len: usize, fill: f64) -> Vec<f64> {
     (0..len).map(|i| def.get(i).copied().unwrap_or(fill)).collect()
 }
 
-fn slider_row(title: &str, c: &ControlDesc, value: f64, set: impl Fn(f64) + 'static) -> (adw::ActionRow, Reset) {
+fn slider_row(title: &str, c: &ControlDesc, value: f64, set: impl Fn(f64) + 'static) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
     let row = adw::ActionRow::builder().title(title).subtitle(format_value(&c.name, value)).build();
     let log = log_scale(&c.name) && c.min >= 0.0;
     let to_pos = move |v: f64| if log { (v.max(1.0)).ln() } else { v };
@@ -358,7 +365,7 @@ fn slider_row(title: &str, c: &ControlDesc, value: f64, set: impl Fn(f64) + 'sta
     });
     row.add_suffix(&scale);
     let s = scale.clone();
-    (row, Rc::new(move || s.set_value(to_pos(value))))
+    (row, Rc::new(move |v| s.set_value(to_pos(v))))
 }
 
 fn fps_row(title: &str, lo: f64, hi: f64, c: &ControlDesc, emit: impl Fn(Vec<f64>) + 'static) -> adw::ComboRow {
@@ -396,6 +403,22 @@ impl Panel {
     pub fn is(&self, control: &str, suffix: &str) -> bool {
         let (Some(v), Some(list)) = (self.value(control), self.enums.get(control)) else { return false };
         list.iter().any(|(n, name)| *n as f64 == v && name.ends_with(suffix))
+    }
+
+    /// Set a slider or a switch as if the user had. False when the camera
+    /// has no such control.
+    pub fn set(&self, name: &str, value: f64) -> bool {
+        if let Some(set) = self.setters.get(name) {
+            set(value);
+            return true;
+        }
+        match self.rows.get(name).and_then(|r| r.downcast_ref::<adw::SwitchRow>()) {
+            Some(row) => {
+                row.set_active(value != 0.0);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn has(&self, name: &str) -> bool {

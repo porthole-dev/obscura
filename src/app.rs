@@ -53,6 +53,10 @@ pub struct App {
     warmed: bool,
     /// Open the last capture as soon as it is written.
     open_pending: bool,
+    last_meta: Metadata,
+    /// AE/AF lock is on; with the exposure time it locked at, if it did.
+    locked: bool,
+    lock_exposure: Option<f64>,
     /// Device turn from the accelerometer, and the display turn it implies.
     device: i32,
     natural_landscape: Option<bool>,
@@ -131,7 +135,9 @@ pub enum Msg {
     PortalSlow,
     TapFocus(f64, f64),
     HideFocus(u32),
-    ContinuousFocus,
+    /// Hold focus and exposure where the viewfinder was long-pressed.
+    Lock(f64, f64),
+    LockExposure(f64),
     Suspended(bool),
     /// Degrees the device is turned clockwise from its natural orientation.
     Orientation(i32),
@@ -200,6 +206,9 @@ pub struct Widgets {
     capture: gtk::Button,
     modes: adw::ToggleGroup,
     record_pill: gtk::Box,
+    lock_pill: gtk::Box,
+    lock_label: gtk::Label,
+    lock_ev: gtk::Scale,
     record_time: gtk::Label,
     thumbnail: Viewfinder,
     gallery: gtk::Button,
@@ -320,6 +329,10 @@ impl App {
         w.viewfinder.add_css_class("switching");
         w.viewfinder.set_texture(None);
         w.focus_ring.set_visible(false);
+        // The new session's controls start automatic.
+        self.locked = false;
+        self.lock_exposure = None;
+        w.lock_pill.set_visible(false);
         perf!("camera-open-request", "camera={index}");
         if let Some(p) = &self.perf {
             p.borrow_mut().awaiting = Some(format!("camera={index}"));
@@ -378,6 +391,7 @@ impl App {
             None => set_chip(&c.wb, &gettext("AWB"), manual.white_balance),
         }
         match (manual.focus, meta.get("LensPosition")) {
+            (true, _) if self.locked => set_chip(&c.focus, &gettext("AF-L"), true),
             (true, Some(d)) => set_chip(&c.focus, &format!("MF {}", format_value("LensPosition", d).replace(' ', "")), true),
             // Single-shot after a tap, continuous otherwise.
             _ if panel.is("AfMode", "Auto") => set_chip(&c.focus, &gettext("AF-S"), true),
@@ -614,7 +628,7 @@ impl Component for App {
             viewfinder.add_controller(pinch);
             let s = sender.clone();
             let hold = gtk::GestureLongPress::new();
-            hold.connect_pressed(move |_, _, _| s.input(Msg::ContinuousFocus));
+            hold.connect_pressed(move |_, x, y| s.input(Msg::Lock(x, y)));
             viewfinder.add_controller(hold);
         }
 
@@ -641,6 +655,28 @@ impl Component for App {
         record_pill.append(&gtk::Box::builder().css_classes(["rec-dot"]).valign(gtk::Align::Center).build());
         record_pill.append(&record_time);
 
+        // AE/AF lock: what is held, and exposure compensation for it.
+        let lock_label = gtk::Label::new(None);
+        let lock_ev = gtk::Scale::with_range(gtk::Orientation::Horizontal, -2.0, 2.0, 0.1);
+        lock_ev.set_value(0.0);
+        lock_ev.add_mark(0.0, gtk::PositionType::Bottom, None);
+        lock_ev.set_draw_value(false);
+        lock_ev.set_width_request(150);
+        label(&lock_ev, &gettext("Exposure Compensation"));
+        {
+            let s = sender.clone();
+            lock_ev.connect_value_changed(move |sc| s.input(Msg::LockExposure(sc.value())));
+        }
+        let lock_pill = gtk::Box::builder()
+            .spacing(10)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Start)
+            .margin_top(52)
+            .css_classes(["lock-pill"])
+            .visible(false)
+            .build();
+        lock_pill.append(&lock_label);
+        lock_pill.append(&lock_ev);
         let chips = Chips {
             zoom: {
                 let text = gtk::Label::builder().label("1×").width_chars(4).max_width_chars(4).css_classes(["numeric"]).build();
@@ -739,6 +775,7 @@ impl Component for App {
         overlay.add_overlay(&focus_layer);
         overlay.add_overlay(&countdown);
         overlay.add_overlay(&record_pill);
+        overlay.add_overlay(&lock_pill);
         overlay.add_overlay(&bar);
 
         // Status page: loading, permission, no camera, errors
@@ -1027,6 +1064,9 @@ impl Component for App {
             granted: false,
             warmed: false,
             open_pending: false,
+            last_meta: Metadata::default(),
+            locked: false,
+            lock_exposure: None,
             device: 0,
             natural_landscape: None,
             display_rotation: 0,
@@ -1083,6 +1123,9 @@ impl Component for App {
             capture,
             modes,
             record_pill,
+            lock_pill,
+            lock_label,
+            lock_ev,
             record_time,
             thumbnail,
             gallery,
@@ -1279,6 +1322,7 @@ impl Component for App {
             }
             Msg::Camera(Event::Metadata(meta)) => {
                 self.frame_duration = meta.get("FrameDuration");
+                self.last_meta = meta.clone();
                 if let Some(p) = &self.panel
                     && w.controls_toggle.is_active()
                 {
@@ -1397,6 +1441,8 @@ impl Component for App {
                 self.show_timer(w);
             }
             Msg::TapFocus(x, y) => {
+                // A tap after a lock lets go of it, and focuses there.
+                self.unlock(w);
                 let (Some(session), Some(panel)) = (&self.session, &self.panel) else { return };
                 let Some(trigger) = session.controls.iter().find(|c| c.name == "AfTrigger") else { return };
                 let Some((nx, ny)) = w.viewfinder.to_sensor(x, y) else { return };
@@ -1446,14 +1492,10 @@ impl Component for App {
                 self.reopen(w, self.camera, None);
             }
             Msg::Suspended(_) => {}
-            Msg::ContinuousFocus => {
-                if let Some(panel) = &self.panel
-                    && panel.select("AfMode", "Continuous")
-                {
-                    self.focus_generation += 1;
-                    self.focusing = false;
-                    w.focus_ring.set_visible(false);
-                    w.toasts.add_toast(adw::Toast::builder().title(gettext("Continuous autofocus")).timeout(2).build());
+            Msg::Lock(x, y) => self.lock(w, x, y),
+            Msg::LockExposure(ev) => {
+                if let (Some(base), Some(panel)) = (self.lock_exposure, &self.panel) {
+                    panel.set("ExposureTime", base * 2f64.powf(ev));
                 }
             }
             Msg::Orientation(d) => {
@@ -1597,10 +1639,75 @@ impl Component for App {
 }
 
 impl App {
-    fn feedback(&self) {
-        if self.settings.as_ref().is_none_or(|s| s.boolean("shutter-sound")) {
-            crate::device::feedback("camera-shutter");
+    fn lock(&mut self, w: &Widgets, x: f64, y: f64) {
+        let Some(panel) = self.panel.clone() else { return };
+        if w.viewfinder.to_sensor(x, y).is_none() {
+            return;
         }
+        let meta = &self.last_meta;
+        let mut held = Vec::new();
+        // Hold what the camera chose last, as manual values in the panel, so
+        // every control shows the lock too.
+        if let (Some(e), Some(g)) = (meta.get("ExposureTime"), meta.get("AnalogueGain"))
+            && panel.has("ExposureTime")
+        {
+            if !(panel.select("ExposureTimeMode", "Manual") | panel.select("AnalogueGainMode", "Manual")) {
+                panel.set("AeEnable", 0.0);
+            }
+            panel.set("ExposureTime", e);
+            panel.set("AnalogueGain", g);
+            self.lock_exposure = Some(e);
+            held.push("AE");
+        }
+        if let Some(d) = meta.get("LensPosition")
+            && panel.has("LensPosition")
+            && panel.select("AfMode", "Manual")
+        {
+            panel.set("LensPosition", d);
+            held.push("AF");
+        }
+        if held.is_empty() {
+            return;
+        }
+        self.locked = true;
+        w.lock_label.set_label(&format!("{} {}", held.join("/"), gettext("LOCK")));
+        w.lock_ev.set_value(0.0);
+        w.lock_ev.set_visible(self.lock_exposure.is_some());
+        w.lock_pill.set_visible(true);
+        let (rw, rh) = (w.focus_ring.width_request() as f64, w.focus_ring.height_request() as f64);
+        w.focus_layer.move_(&w.focus_ring, x - rw / 2.0, y - rh / 2.0);
+        w.focus_ring.remove_css_class("scanning");
+        w.focus_ring.remove_css_class("failed");
+        w.focus_ring.add_css_class("focused");
+        w.focus_ring.set_visible(true);
+        self.focusing = false;
+        self.focus_generation += 1;
+        self.feedback_event("camera-focus");
+    }
+
+    fn unlock(&mut self, w: &Widgets) {
+        if !std::mem::take(&mut self.locked) {
+            return;
+        }
+        self.lock_exposure = None;
+        w.lock_pill.set_visible(false);
+        w.focus_ring.set_visible(false);
+        if let Some(panel) = &self.panel {
+            if !(panel.select("ExposureTimeMode", "Auto") | panel.select("AnalogueGainMode", "Auto")) {
+                panel.set("AeEnable", 1.0);
+            }
+            panel.select("AfMode", "Continuous");
+        }
+    }
+
+    fn feedback_event(&self, event: &str) {
+        if self.settings.as_ref().is_none_or(|s| s.boolean("shutter-sound")) {
+            crate::device::feedback(event);
+        }
+    }
+
+    fn feedback(&self) {
+        self.feedback_event("camera-shutter");
     }
 
     fn set_zoom(&mut self, w: &Widgets, zoom: f64) {

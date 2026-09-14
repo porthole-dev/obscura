@@ -43,6 +43,7 @@ viewfinder.viewfinder.switching { opacity: 0; transition: none; }
 .mode-switch { background-color: alpha(black, 0.45); }
 .raw-toggle { font-weight: 800; font-size: 0.85em; }
 .timer.on { color: #f6d32d; }
+.lock-pill { background-color: alpha(black, 0.55); color: #f6d32d; border-radius: 9999px; padding: 2px 14px; font-weight: 800; font-size: 0.85em; }
 .recording-pill { background-color: alpha(black, 0.55); color: white; border-radius: 9999px; padding: 4px 12px; font-weight: 700; }
 .rec-dot { min-width: 10px; min-height: 10px; border-radius: 9999px; background-color: #e01b24; animation: pulse 900ms ease-in-out infinite alternate; }
 @keyframes pulse { from { opacity: 1; } to { opacity: 0.2; } }
