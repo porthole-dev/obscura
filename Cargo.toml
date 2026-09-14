@@ -19,11 +19,6 @@ anyhow = "1"
 libcamera-sys = "0.7"
 smallvec = "1"
 
-# libcamera 0.7.2+ headers use std::span (C++20) and no longer pull in
-# libcamera::Span transitively; the published libcamera-sys builds its shim as
-# C++17. Carried until libcamera-rs picks it up.
-[patch.crates-io]
-libcamera-sys = { path = "subprojects/libcamera-sys" }
 
 [profile.release]
 lto = "thin"

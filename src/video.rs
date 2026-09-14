@@ -73,6 +73,17 @@ fn audio_source() -> Option<&'static str> {
     })
 }
 
+/// The frame size to encode: the largest standard 16:9 size the stream
+/// covers, centre-cropped (4K from 4024x2268, 1080p from 2012x1132), else the
+/// stream aligned down to 16 -- hardware encoders reject odd sizes, and the
+/// soft ISP hands out sizes like 4024x2268.
+fn encode_size(width: u32, height: u32) -> (u32, u32) {
+    [(3840, 2160), (1920, 1080), (1280, 720)]
+        .into_iter()
+        .find(|&(w, h)| w <= width && h <= height && width * 100 / height.max(1) < 190)
+        .unwrap_or((width & !15, height & !15))
+}
+
 pub fn videos_dir() -> PathBuf {
     let dir = relm4::gtk::glib::user_special_dir(relm4::gtk::glib::UserDirectory::Videos)
         .unwrap_or_else(|| relm4::gtk::glib::home_dir().join("Videos"))
@@ -91,6 +102,18 @@ fn gst_format(fourcc: u32) -> Option<&'static str> {
         b"YUYV" => "YUY2",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn encode_sizes() {
+        assert_eq!(super::encode_size(4024, 2268), (3840, 2160));
+        assert_eq!(super::encode_size(2012, 1132), (1920, 1080));
+        assert_eq!(super::encode_size(4024, 3032), (3840, 2160));
+        assert_eq!(super::encode_size(640, 480), (640, 480));
+        assert_eq!(super::encode_size(1000, 999), (992, 992));
+    }
 }
 
 pub struct Recorder {
@@ -118,19 +141,21 @@ impl Recorder {
         let stem = crate::photo::file_stem().replacen("IMG_", "VID_", 1);
         let path = videos_dir().join(format!("{stem}.mp4"));
 
-        // Encoders want even sizes; the soft ISP hands out e.g. 4024x2268.
-        let (ew, eh) = (width & !1, height & !1);
+        let (ew, eh) = encode_size(width, height);
+        let (cx, cy) = (width - ew, height - eh);
         let audio = audio_source()
             .map(|s| format!(" {s} ! queue ! audioconvert ! audioresample ! opusenc ! queue ! mux."))
             .unwrap_or_default();
         let desc = format!(
             "appsrc name=src is-live=true do-timestamp=true format=time max-buffers=3 leaky-type=downstream \
              ! queue max-size-buffers=3 leaky=downstream \
-             ! videoconvert n-threads=4 ! videocrop right={} bottom={} \
+             ! videocrop left={} right={} top={} bottom={} ! videoconvert n-threads=4 \
              ! video/x-raw,format=NV12 ! {} {} ! {} ! queue ! mp4mux name=mux \
              ! filesink location=\"{}\"{audio}",
-            width - ew,
-            height - eh,
+            cx / 2,
+            cx - cx / 2,
+            cy / 2,
+            cy - cy / 2,
             enc.element,
             enc.properties,
             enc.parser,

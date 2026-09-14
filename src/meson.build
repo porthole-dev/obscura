@@ -1,3 +1,8 @@
+# Like Alpine's Rust packages: embed the dependency tree when cargo-auditable
+# is available. CARGO_NET_OFFLINE=true in the environment makes this --frozen.
+cargo_auditable = find_program('cargo-auditable', required: false)
+cargo_build = cargo_auditable.found() ? [cargo, 'auditable', 'build'] : [cargo, 'build']
+
 cargo_env = environment()
 cargo_env.set('LOCALEDIR', localedir)
 
@@ -13,7 +18,7 @@ custom_target(
   install_dir: bindir,
   env: cargo_env,
   command: [
-    cargo, 'build', '--release', '--locked',
+    cargo_build, '--release', '--locked',
     '--manifest-path', meson.project_source_root() / 'Cargo.toml',
     '--target-dir', target_dir,
     '&&',

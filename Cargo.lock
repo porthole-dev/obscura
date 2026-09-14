@@ -1106,6 +1106,8 @@ dependencies = [
 [[package]]
 name = "libcamera-sys"
 version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb33a6d621530b7d10c25d8871d86615e84249854d8e5974812ca77458df9253"
 dependencies = [
  "bindgen",
  "cc",
