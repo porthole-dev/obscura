@@ -73,6 +73,7 @@ pub enum Msg {
     Grid(bool),
     TapFocus(f64, f64),
     HideFocus(u32),
+    ContinuousFocus,
     Suspended(bool),
 }
 
@@ -137,6 +138,7 @@ pub struct Widgets {
     thumbnail: Viewfinder,
     gallery: gtk::Button,
     saving_spinner: adw::Spinner,
+    gallery_placeholder: gtk::Image,
     chips: Chips,
 }
 
@@ -287,6 +289,8 @@ impl App {
         }
         match (manual.focus, meta.get("LensPosition")) {
             (true, Some(d)) => set_chip(&c.focus, &format!("MF {}", format_value("LensPosition", d)), true),
+            // Single-shot after a tap, continuous otherwise.
+            _ if panel.is("AfMode", "Auto") => set_chip(&c.focus, &gettext("AF-S"), true),
             _ => set_chip(&c.focus, &gettext("AF"), false),
         }
         set_chip(&c.fps, &format!("{:.0} fps", self.fps), false);
@@ -464,7 +468,8 @@ impl Component for App {
                 }
             });
             viewfinder.add_controller(tap);
-            // Swipe sideways between photo and video, like phone cameras.
+            // Swipe sideways between photo and video, like phone cameras;
+            // hold to go back to continuous focus after a tap.
             let swipe = gtk::GestureSwipe::new();
             swipe.connect_swipe(|_, vx, vy| {
                 if vx.abs() > 500.0 && vx.abs() > 2.0 * vy.abs() {
@@ -473,6 +478,10 @@ impl Component for App {
                 }
             });
             viewfinder.add_controller(swipe);
+            let s = sender.clone();
+            let hold = gtk::GestureLongPress::new();
+            hold.connect_pressed(move |_, _, _| s.input(Msg::ContinuousFocus));
+            viewfinder.add_controller(hold);
         }
 
         let focus_ring = gtk::Box::builder().css_classes(["focus-ring"]).width_request(76).height_request(76).visible(false).build();
@@ -532,6 +541,8 @@ impl Component for App {
         thumbnail.set_overflow(gtk::Overflow::Hidden);
         let saving_spinner = adw::Spinner::builder().visible(false).halign(gtk::Align::Center).valign(gtk::Align::Center).build();
         let gallery_content = gtk::Overlay::builder().child(&thumbnail).build();
+        let gallery_placeholder = gtk::Image::from_icon_name("image-x-generic-symbolic");
+        gallery_content.add_overlay(&gallery_placeholder);
         gallery_content.add_overlay(&saving_spinner);
         let gallery = gtk::Button::builder()
             .child(&gallery_content)
@@ -850,6 +861,7 @@ impl Component for App {
             thumbnail,
             gallery,
             saving_spinner,
+            gallery_placeholder,
             chips,
         };
         model.show_timer(&widgets);
@@ -1115,19 +1127,22 @@ impl Component for App {
             Msg::TapFocus(x, y) => {
                 let (Some(session), Some(panel)) = (&self.session, &self.panel) else { return };
                 let Some(trigger) = session.controls.iter().find(|c| c.name == "AfTrigger") else { return };
-                if w.viewfinder.to_sensor(x, y).is_none() {
-                    return;
-                }
-                // ponytail: no AfWindows yet, so the scan uses the pipeline's
-                // default area; send them for cameras that list the control.
+                let Some((nx, ny)) = w.viewfinder.to_sensor(x, y) else { return };
                 // A tap is one scan: continuous focus would wander off again.
                 if panel.has("AfMode") && !panel.select("AfMode", "Auto") {
                     return;
                 }
+                let Some(b) = self.backend.as_deref() else { return };
+                // Without AfWindows the camera focuses where it always does,
+                // so the ring goes there rather than pretend.
+                let (x, y) = if session.af_windows {
+                    b.send(Cmd::FocusAt(nx, ny));
+                    (x, y)
+                } else {
+                    w.viewfinder.layout().map(|l| ((l.x + l.width / 2.0) as f64, (l.y + l.height / 2.0) as f64)).unwrap_or((x, y))
+                };
                 let start = trigger.enums.iter().find(|(_, n)| n.ends_with("Start")).map(|(v, _)| *v).unwrap_or(0);
-                if let Some(b) = self.backend() {
-                    b.send(Cmd::SetControl { id: trigger.id, value: vec![start as f64] });
-                }
+                b.send(Cmd::SetControl { id: trigger.id, value: vec![start as f64] });
                 let (rw, rh) = (w.focus_ring.width_request() as f64, w.focus_ring.height_request() as f64);
                 w.focus_layer.move_(&w.focus_ring, x - rw / 2.0, y - rh / 2.0);
                 for class in ["focused", "failed"] {
@@ -1157,6 +1172,16 @@ impl Component for App {
                 self.reopen(w, self.camera, None);
             }
             Msg::Suspended(_) => {}
+            Msg::ContinuousFocus => {
+                if let Some(panel) = &self.panel
+                    && panel.select("AfMode", "Continuous")
+                {
+                    self.focus_generation += 1;
+                    self.focusing = false;
+                    w.focus_ring.set_visible(false);
+                    w.toasts.add_toast(adw::Toast::builder().title(gettext("Continuous autofocus")).timeout(2).build());
+                }
+            }
             Msg::HideFocus(generation) => {
                 if generation == self.focus_generation {
                     self.focusing = false;
@@ -1274,6 +1299,7 @@ impl App {
         let tex = gdk::MemoryTexture::new(thumb.width as i32, thumb.height as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, thumb.width as usize * 4);
         w.thumbnail.set_texture(Some(tex.upcast()));
         w.thumbnail.set_rotation(thumb.rotation, false);
+        w.gallery_placeholder.set_visible(false);
         w.gallery.set_sensitive(true);
         self.last_capture = Some(path);
     }

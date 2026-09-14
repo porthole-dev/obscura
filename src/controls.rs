@@ -392,6 +392,12 @@ impl Panel {
         self.values.borrow().get(name).and_then(|v| v.first().copied())
     }
 
+    /// Whether enum control `control` is set to the value named `…suffix`.
+    pub fn is(&self, control: &str, suffix: &str) -> bool {
+        let (Some(v), Some(list)) = (self.value(control), self.enums.get(control)) else { return false };
+        list.iter().any(|(n, name)| *n as f64 == v && name.ends_with(suffix))
+    }
+
     pub fn has(&self, name: &str) -> bool {
         self.rows.contains_key(name)
     }

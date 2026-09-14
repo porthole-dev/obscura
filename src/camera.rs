@@ -98,6 +98,8 @@ pub struct Session {
     pub raw: bool,
     /// Frame rate range the configured mode allows, if the camera reports it.
     pub fps: Option<(f64, f64)>,
+    /// Autofocus can be pointed at a spot (AfWindows).
+    pub af_windows: bool,
 }
 
 /// A viewfinder frame. The dmabuf stays valid, and the request stays out of
@@ -166,6 +168,8 @@ pub struct Still {
 pub enum Cmd {
     Open { camera: usize, mode: Option<Mode> },
     SetControl { id: u32, value: Vec<f64> },
+    /// Meter autofocus around a point, in 0..1 sensor coordinates.
+    FocusAt(f64, f64),
     Capture,
     Record(Option<std::sync::Arc<crate::video::Recorder>>),
     CopyFrames(bool),
@@ -280,6 +284,11 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, emit: impl Fn(Event)) {
                     live.set_control(id, &value);
                 }
             }
+            Internal::Cmd(Cmd::FocusAt(x, y)) => {
+                if let Some(live) = session.as_mut() {
+                    live.focus_at(x, y);
+                }
+            }
             Internal::Cmd(Cmd::Capture) => {
                 if let Some(live) = session.as_mut() {
                     live.capture_next = true;
@@ -321,6 +330,8 @@ struct Live {
     generation: u64,
     last_meta: Instant,
     outstanding: usize,
+    /// The frame AfWindows are expressed in.
+    crop_max: Option<libcamera::geometry::Rectangle>,
 }
 
 impl Live {
@@ -394,6 +405,8 @@ impl Live {
 
         let controls = describe_controls(&cam);
         let fps = frame_duration_range(&cam);
+        let crop_max = cam.properties().get::<properties::ScalerCropMaximum>().ok().map(|r| r.0);
+        let af_windows = crop_max.is_some() && ["AfWindows", "AfMetering"].iter().all(|n| controls.iter().any(|c| c.name == *n));
         let session = Session {
             camera: index,
             info,
@@ -404,6 +417,7 @@ impl Live {
             controls,
             raw: raw_stream.is_some(),
             fps,
+            af_windows,
         };
         let pending = ControlList::new();
         Ok((
@@ -422,6 +436,7 @@ impl Live {
                 },
                 last_meta: Instant::now(),
                 outstanding,
+                crop_max,
             },
             session,
         ))
@@ -442,6 +457,28 @@ impl Live {
         };
         if let Err(e) = self.pending.set_raw(id, v) {
             log::warn!("set {}: {e}", desc.name);
+        }
+    }
+
+    fn focus_at(&mut self, x: f64, y: f64) {
+        let Some(max) = self.crop_max else { return };
+        let find = |name: &str| self.info.controls.iter().find(|c| c.name == name);
+        let (Some(windows), Some(metering)) = (find("AfWindows"), find("AfMetering")) else { return };
+        let Some((mode, _)) = metering.enums.iter().find(|(_, n)| n.ends_with("Windows")) else { return };
+        // An eighth of the frame each way, centred on the point, kept inside.
+        let (w, h) = (max.width / 8, max.height / 8);
+        let cx = (x.clamp(0.0, 1.0) * max.width as f64) as i64 - w as i64 / 2;
+        let cy = (y.clamp(0.0, 1.0) * max.height as f64) as i64 - h as i64 / 2;
+        let rect = libcamera::geometry::Rectangle {
+            x: max.x + cx.clamp(0, (max.width - w) as i64) as i32,
+            y: max.y + cy.clamp(0, (max.height - h) as i64) as i32,
+            width: w,
+            height: h,
+        };
+        let (windows, metering, mode) = (windows.id, metering.id, *mode);
+        let _ = self.pending.set_raw(metering, ControlValue::Int32(smallvec::smallvec![mode]));
+        if let Err(e) = self.pending.set_raw(windows, ControlValue::Rectangle(smallvec::smallvec![rect])) {
+            log::warn!("set AfWindows: {e}");
         }
     }
 
