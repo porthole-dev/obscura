@@ -104,7 +104,7 @@ pub fn videos_dir() -> PathBuf {
     dir
 }
 
-fn gst_format(fourcc: u32) -> Option<&'static str> {
+pub(crate) fn gst_format(fourcc: u32) -> Option<&'static str> {
     Some(match &fourcc.to_le_bytes() {
         b"XB24" => "RGBx",
         b"AB24" => "RGBA",

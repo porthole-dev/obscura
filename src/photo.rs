@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use gst::prelude::*;
 
 use crate::camera::Still;
@@ -20,16 +20,6 @@ pub fn pictures_dir() -> PathBuf {
 pub fn file_stem() -> String {
     let now = relm4::gtk::glib::DateTime::now_local().expect("local time");
     format!("IMG_{}", now.format("%Y%m%d_%H%M%S").map(|s| s.to_string()).unwrap_or_default())
-}
-
-fn gst_format(fourcc: u32) -> Option<&'static str> {
-    Some(match &fourcc.to_le_bytes() {
-        b"XB24" => "RGBx",
-        b"AB24" => "RGBA",
-        b"XR24" => "BGRx",
-        b"AR24" => "BGRA",
-        _ => return None,
-    })
 }
 
 /// A centred videocrop keeping 1/zoom of each side, or nothing at 1x.
@@ -77,16 +67,19 @@ pub fn save_jpeg(still: &Still, path: &Path) -> Result<()> {
     crate::video::gst();
     // SAFETY: idempotent (GOnce inside) and thread-safe.
     unsafe { gst_tag_register_musicbrainz_tags() };
-    let format = gst_format(still.fourcc).context("viewfinder format has no JPEG path")?;
+    let format = crate::video::gst_format(still.fourcc).context("viewfinder format has no JPEG path")?;
     let (w, h, stride) = (still.width as usize, still.height as usize, still.stride as usize);
-    // Tight rows: the capture buffer may be padded past width * 4.
-    let mut pixels = Vec::with_capacity(w * h * 4);
-    for row in still.rgba.chunks(stride).take(h) {
-        pixels.extend_from_slice(&row[..w * 4]);
-    }
-    if pixels.len() != w * h * 4 {
-        bail!("short frame: {} of {} bytes", pixels.len(), w * h * 4);
-    }
+    // The capture buffer as it is, strides and planes described by a
+    // VideoMeta: RGB rows padded past width * 4, or NV12's two planes.
+    let video_format = gst_video::VideoFormat::from_string(format);
+    let (offsets, strides): (&[usize], &[i32]) = if video_format == gst_video::VideoFormat::Nv12 {
+        (&[0, stride * h], &[stride as i32, stride as i32])
+    } else {
+        (&[0], &[stride as i32])
+    };
+    let mut buffer = gst::Buffer::from_mut_slice(still.rgba.clone());
+    gst_video::VideoMeta::add_full(buffer.get_mut().context("buffer")?, gst_video::VideoFrameFlags::empty(), video_format, w as u32, h as u32, offsets, strides)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let pipeline = gst::parse::launch(&format!(
         "appsrc name=src ! videoconvert ! {}videoflip method={} ! jpegenc quality=92 ! jifmux name=mux ! filesink location=\"{}\"",
@@ -130,7 +123,7 @@ pub fn save_jpeg(still: &Still, path: &Path) -> Result<()> {
     setter.merge_tags(&tags, gst::TagMergeMode::Replace);
 
     pipeline.set_state(gst::State::Playing)?;
-    src.push_buffer(gst::Buffer::from_mut_slice(pixels))?;
+    src.push_buffer(buffer)?;
     src.end_of_stream()?;
     let bus = pipeline.bus().unwrap();
     let result = match bus.timed_pop_filtered(gst::ClockTime::from_seconds(20), &[gst::MessageType::Eos, gst::MessageType::Error]) {

@@ -404,7 +404,10 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit:
             },
             Internal::Returned(req, generation) => match session.as_mut() {
                 Some(live) if live.generation == generation => live.requeue(req),
-                _ => drop(req),
+                _ => {
+                    perf!("late-return", "generation={generation}");
+                    drop(req)
+                }
             },
         }
     }
@@ -647,6 +650,7 @@ impl Live {
             return;
         };
         let Some(v) = control_value(desc, value) else { return };
+        perf!("control", "{}={value:?}", desc.name);
         // Triggers are one-shot; everything else is a setting to carry over.
         if desc.name != "AfTrigger" {
             self.user.retain(|(i, _)| *i != id);
@@ -815,6 +819,7 @@ impl Live {
                 }
                 Ok(cmd @ Internal::Cmd(_)) => deferred.push(cmd),
                 Err(_) => {
+                    perf!("close-timeout", "outstanding={} generation={}", self.outstanding, self.generation);
                     log::warn!("{} requests still out at close", self.outstanding);
                     break;
                 }
@@ -836,12 +841,25 @@ fn sensor_modes(cam: &ActiveCamera) -> Vec<Mode> {
         let Some(sc) = cfg.get(0) else { continue };
         let formats = sc.formats();
         for pf in formats.pixel_formats().into_iter() {
-            for s in formats.sizes(pf) {
+            // A range lists common sizes inside it, not what the camera can
+            // do: add its largest, and later keep only sizes that configure
+            // as asked.
+            let max = formats.range(pf).max;
+            // With the largest, its half (a binned mode) and 16:9 of both.
+            let derived = (max.width > 0).then(|| {
+                let half = Size { width: (max.width / 2) & !1, height: (max.height / 2) & !1 };
+                let wide = |s: Size| Size { width: s.width, height: (s.width * 9 / 16) & !1 };
+                [max, half, wide(max), wide(half)]
+            });
+            for s in formats.sizes(pf).into_iter().chain(derived.into_iter().flatten()) {
                 let m = Mode { width: s.width, height: s.height };
                 if !modes.contains(&m) {
                     modes.push(m);
                 }
             }
+        }
+        if matches!(role, StreamRole::ViewFinder) {
+            modes.retain(|m| configures_as(cam, *m));
         }
         if !modes.is_empty() {
             break;
@@ -849,6 +867,16 @@ fn sensor_modes(cam: &ActiveCamera) -> Vec<Mode> {
     }
     modes.sort_by_key(|m| std::cmp::Reverse(m.width as u64 * m.height as u64));
     modes
+}
+
+/// Whether a viewfinder stream of this size validates without being resized.
+fn configures_as(cam: &ActiveCamera, mode: Mode) -> bool {
+    let Some(mut cfg) = cam.generate_configuration(&[StreamRole::ViewFinder]) else { return false };
+    if let Some(mut s) = cfg.get_mut(0) {
+        s.set_size(Size { width: mode.width, height: mode.height });
+    }
+    let valid = !matches!(cfg.validate(), CameraConfigurationStatus::Invalid);
+    valid && cfg.get(0).is_some_and(|s| (s.get_size().width, s.get_size().height) == (mode.width, mode.height))
 }
 
 fn configure(cam: &ActiveCamera, mode: Mode, raw: bool) -> Option<CameraConfiguration> {

@@ -53,6 +53,9 @@ pub struct App {
     warmed: bool,
     /// Open the last capture as soon as it is written.
     open_pending: bool,
+    /// The camera is switching to its photo mode for a shot: hold the frozen
+    /// viewfinder until the photo is taken.
+    awaiting_still: bool,
     last_meta: Metadata,
     /// AE/AF lock is on; with the exposure time it locked at, if it did.
     locked: bool,
@@ -328,8 +331,11 @@ impl App {
     /// dark until the first frame fades it back in.
     fn reopen(&mut self, w: &Widgets, index: usize, mode: Option<Mode>) {
         w.capture.set_sensitive(false);
+        // A blurred copy of the old picture until the new one arrives. Not
+        // opacity 0: GTK keeps a hidden widget's last drawing, and with it
+        // the camera buffer the old session needs back to close.
+        w.viewfinder.freeze();
         w.viewfinder.add_css_class("switching");
-        w.viewfinder.set_texture(None);
         w.focus_ring.set_visible(false);
         // The new session's controls start automatic.
         self.locked = false;
@@ -341,6 +347,7 @@ impl App {
         }
         // A still requested from the closing session may never arrive.
         self.saving = false;
+        self.awaiting_still = false;
         w.saving_spinner.set_visible(false);
         self.session = None;
         self.awaiting_frame = true;
@@ -437,6 +444,8 @@ impl App {
             // The thumbnail is what was on screen, right away; the saved
             // photo's replaces it when written.
             let front = session.info.facing == Facing::Front;
+            let full_resolution = self.settings.as_ref().is_none_or(|s| s.boolean("full-resolution"));
+            self.awaiting_still = full_resolution && session.view != session.mode;
             if let Some(copy) = w.viewfinder.freeze() {
                 w.thumbnail.set_texture(Some(copy));
                 w.thumbnail.set_rotation(0, front);
@@ -1107,6 +1116,7 @@ impl Component for App {
             granted: false,
             warmed: false,
             open_pending: false,
+            awaiting_still: false,
             last_meta: Metadata::default(),
             locked: false,
             lock_exposure: None,
@@ -1242,7 +1252,8 @@ impl Component for App {
             Msg::OpenSettings => {
                 let args = [std::ffi::OsStr::new("gnome-control-center"), std::ffi::OsStr::new("camera")];
                 if let Err(e) = gio::Subprocess::newv(&args, gio::SubprocessFlags::NONE) {
-                    w.toasts.add_toast(adw::Toast::new(&format!("{}: {e}", gettext("Could not open Settings"))));
+                    log::warn!("could not open Settings: {e}");
+                    w.toasts.add_toast(adw::Toast::new(&gettext("Could not open Settings")));
                 }
             }
             Msg::Camera(Event::Cameras(cameras)) => {
@@ -1329,6 +1340,12 @@ impl Component for App {
             Msg::Camera(Event::FrameReady) => {
                 let started = self.perf.is_some().then(Instant::now);
                 let Some(frame) = self.backend.as_deref().and_then(|b| b.take_frame()) else { return };
+                // Frames still coming from a session being closed go straight
+                // back: shown, they would hold the buffer it waits for, and
+                // put the old picture over the frozen one.
+                if self.session.is_none() || self.awaiting_still {
+                    return drop(frame);
+                }
                 let copied = frame.bytes.is_some();
                 match viewfinder::texture(frame) {
                     Ok(texture) => w.viewfinder.set_texture(Some(texture)),
@@ -1391,6 +1408,7 @@ impl Component for App {
                 }
             }
             Msg::Camera(Event::Still(still)) => {
+                self.awaiting_still = false;
                 if let Some(t) = self.perf.as_ref().and_then(|p| p.borrow().shutter) {
                     perf!("still-received", "since_shutter_ms={:.0}", t.elapsed().as_secs_f64() * 1e3);
                 }
@@ -1443,6 +1461,7 @@ impl Component for App {
                 }
             }
             Msg::Capture => {
+                perf!("capture-pressed", "session={} video={} saving={}", self.session.is_some(), self.video, self.saving);
                 if let Some((_, source)) = self.countdown.take() {
                     source.remove();
                     w.countdown.set_visible(false);
@@ -1527,8 +1546,8 @@ impl Component for App {
                 if let Some(b) = self.backend() {
                     b.send(Cmd::Close);
                 }
+                w.viewfinder.freeze();
                 w.viewfinder.add_css_class("switching");
-                w.viewfinder.set_texture(None);
                 self.session = None;
                 w.capture.set_sensitive(false);
             }
@@ -1597,7 +1616,7 @@ impl Component for App {
                     Err(e) => {
                         log::warn!("recording did not start: {e}");
                         self.record_started = None;
-                        w.toasts.add_toast(adw::Toast::new(&format!("{}: {e}", gettext("Could not record"))));
+                        w.toasts.add_toast(adw::Toast::new(&gettext("Could not start recording")));
                     }
                 }
             }
@@ -1624,7 +1643,7 @@ impl Component for App {
                     }
                     Err(e) => {
                         log::warn!("recording failed: {e}");
-                        w.toasts.add_toast(adw::Toast::new(&format!("{}: {e}", gettext("Could not save video"))));
+                        w.toasts.add_toast(adw::Toast::new(&gettext("Could not save the video")));
                     }
                 }
             }
@@ -1656,15 +1675,15 @@ impl Component for App {
                 if let Some(s) = &self.session {
                     // Video opens at 1080p (a fast, binned mode where there is
                     // one) and photos at the full sensor; the menu offers the rest.
+                    // Always reopen: video records from the stream it views,
+                    // photos view a faster one.
                     let target = if video {
-                        Some(s.modes.iter().copied().filter(|m| wide(m) && m.width >= 1920).min_by_key(|m| m.width).or_else(|| s.modes.iter().copied().filter(wide).max_by_key(|m| m.width)))
+                        s.modes.iter().copied().filter(|m| wide(m) && m.width >= 1920).min_by_key(|m| m.width).or_else(|| s.modes.iter().copied().filter(wide).max_by_key(|m| m.width))
                     } else {
-                        Some(s.modes.first().copied())
+                        s.modes.first().copied()
                     };
-                    if let Some(Some(mode)) = target {
-                        let camera = s.camera;
-                        self.reopen(w, camera, Some(mode));
-                    }
+                    let (camera, mode) = (s.camera, target.unwrap_or(s.mode));
+                    self.reopen(w, camera, Some(mode));
                 }
             }
             Msg::Found(path, thumb) => {
@@ -1686,7 +1705,13 @@ impl Component for App {
                             sender.input(Msg::OpenLast);
                         }
                     }
-                    Err(e) => w.toasts.add_toast(adw::Toast::new(&format!("{}: {e}", gettext("Could not save photo")))),
+                    Err(e) => {
+                        perf!("photo-failed", "{e}");
+                        log::warn!("could not save photo: {e}");
+                        // Details go to the log; a toast wider than a phone
+                        // would widen the window.
+                        w.toasts.add_toast(adw::Toast::new(&gettext("Could not save the photo")));
+                    }
                 }
             }
             Msg::OpenLast if self.saving => self.open_pending = true,
@@ -1844,21 +1869,38 @@ impl App {
 fn thumbnail(still: &Still) -> Thumb {
     let (tw, th) = (128u32, (128 * still.height / still.width.max(1)).max(1));
     let mut rgba = Vec::with_capacity((tw * th * 4) as usize);
-    let bgr = matches!(&still.fourcc.to_le_bytes(), b"XR24" | b"AR24");
+    let code = still.fourcc.to_le_bytes();
+    let stride = still.stride as usize;
     for y in 0..th {
         for x in 0..tw {
             let sx = (x * still.width / tw) as usize;
             let sy = (y * still.height / th) as usize;
-            let i = sy * still.stride as usize + sx * 4;
-            let px = still.rgba.get(i..i + 3).unwrap_or(&[0, 0, 0]);
-            if bgr {
-                rgba.extend([px[2], px[1], px[0], 255]);
-            } else {
-                rgba.extend([px[0], px[1], px[2], 255]);
-            }
+            let byte = |i: usize| still.rgba.get(i).copied().unwrap_or(0);
+            let px = match &code {
+                b"NV12" => {
+                    let uv = stride * still.height as usize + (sy / 2) * stride + (sx & !1);
+                    yuv_to_rgb(byte(sy * stride + sx), byte(uv), byte(uv + 1))
+                }
+                b"XR24" | b"AR24" => {
+                    let i = sy * stride + sx * 4;
+                    [byte(i + 2), byte(i + 1), byte(i)]
+                }
+                _ => {
+                    let i = sy * stride + sx * 4;
+                    [byte(i), byte(i + 1), byte(i + 2)]
+                }
+            };
+            rgba.extend([px[0], px[1], px[2], 255]);
         }
     }
     Thumb { rgba, width: tw, height: th, rotation: still.info.rotation }
+}
+
+/// BT.601 limited-range YCbCr to RGB, as cameras hand NV12 out.
+fn yuv_to_rgb(y: u8, u: u8, v: u8) -> [u8; 3] {
+    let (y, u, v) = (1.164 * (y as f32 - 16.0), u as f32 - 128.0, v as f32 - 128.0);
+    let c = |x: f32| x.round().clamp(0.0, 255.0) as u8;
+    [c(y + 1.596 * v), c(y - 0.392 * u - 0.813 * v), c(y + 2.017 * u)]
 }
 
 #[cfg(test)]
@@ -1874,6 +1916,14 @@ mod tests {
         assert_eq!(e, 30000.0);
         assert!((g - 2.0 * 80000.0 / 30000.0).abs() < 1e-9);
         assert_eq!(compensate(20000.0, 8.0, 2.0, 30000.0, 16.0).1, 16.0);
+    }
+
+    #[test]
+    fn nv12_thumbnails_keep_their_colours() {
+        assert_eq!(yuv_to_rgb(235, 128, 128), [255, 255, 255]);
+        assert_eq!(yuv_to_rgb(16, 128, 128), [0, 0, 0]);
+        let red = yuv_to_rgb(81, 90, 240);
+        assert!(red[0] > 240 && red[1] < 20 && red[2] < 20, "{red:?}");
     }
 
     #[test]

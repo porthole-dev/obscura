@@ -19,10 +19,9 @@ const GETTEXT_PACKAGE: &str = "obscura";
 
 const CSS: &str = "
 .camera { background-color: black; }
-viewfinder.viewfinder { transition: opacity 250ms ease-out; }
+viewfinder.viewfinder { transition: opacity 250ms ease-out, filter 250ms ease-out; }
 viewfinder.viewfinder.flash { opacity: 0.1; transition: none; }
-viewfinder.viewfinder.switching { opacity: 0; transition: none; }
-.camera headerbar button { min-width: 38px; min-height: 38px; }
+viewfinder.viewfinder.switching { filter: blur(12px); opacity: 0.6; transition: none; }
 .capture-bar-side { padding: 12px 16px; background: linear-gradient(to left, alpha(black, 0.65), alpha(black, 0.3) 75%, transparent); }
 .capture-bar { padding: 10px 18px 20px 18px; background: linear-gradient(to top, alpha(black, 0.65), alpha(black, 0.35) 75%, transparent); }
 .shutter { min-width: 76px; min-height: 76px; padding: 0; border-radius: 9999px; -gtk-icon-size: 28px; background-color: white; color: black; box-shadow: 0 0 0 4px alpha(white, 0.3); transition: transform 120ms ease-out, background-color 200ms, box-shadow 200ms; }

@@ -2,15 +2,27 @@
 # Drive the preview through Obscura's main flows and check each step in the
 # OBSCURA_PERF log. Screenshots land in target/preview/run/shots (copied to
 # target/preview/check/). Exit status is the number of failed checks.
-#   build-aux/preview/check.sh [--no-build]
+#   build-aux/preview/check.sh [--no-build] [--camera fake|virtual]
+# With --camera virtual the main flows run against the real libcamera stack
+# (its virtual pipeline, see container/) instead of the fake camera.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 P=$here/preview.sh
-log=$root/target/preview/run/app.log
-out=$root/target/preview/check
+target=${PREVIEW_TARGET_DIR:-$root/target/preview}
+log=$target/run/app.log
+out=$target/check
 failed=0 step=0
-[ "${1:-}" = --no-build ] || "$P" build >/dev/null || { echo "build failed" >&2; exit 100; }
+build=1 camera=fake
+while [ $# -gt 0 ]; do
+	case $1 in
+	--no-build) build=0 ;;
+	--camera) camera=$2; shift ;;
+	esac
+	shift
+done
+[ $build = 0 ] || "$P" build >/dev/null || { echo "build failed" >&2; exit 100; }
+if [ $camera = virtual ]; then main_fake=""; else main_fake=taimen; fi
 rm -rf "$out" && mkdir -p "$out"
 
 count() { grep -c "obscura-perf [0-9.]* $1" "$log" 2>/dev/null || true; }
@@ -29,7 +41,7 @@ expect() {
 	done
 	printf 'ok    %-34s %s\n' "$name" "$(grep "obscura-perf [0-9.]* $event" "$log" | tail -1 | cut -d' ' -f2-)"
 }
-shot() { step=$((step + 1)); "$P" shot "$(printf %02d "$step")-$1" && cp "$root/target/preview/run/shots/$(printf %02d "$step")-$1.png" "$out/"; }
+shot() { step=$((step + 1)); "$P" shot "$(printf %02d "$step")-$1" && cp "$target/run/shots/$(printf %02d "$step")-$1.png" "$out/"; }
 stop() { cp "$log" "$out/${1:-run}.log" 2>/dev/null; "$P" stop; }
 start() { "$P" start "$@" >/dev/null || { echo "FAIL  start $*"; failed=$((failed + 1)); return 1; }; }
 
@@ -40,21 +52,35 @@ for fake in denied nocamera busy; do
 done
 
 # The main flows, phone-sized
-OBSCURA_FAKE=taimen start 360 720 || exit 100
+OBSCURA_FAKE=$main_fake start 360 720 || exit 100
 expect "launch: first frame" "frame-first-presented" 1 30 && shot launch
 "$P" act toggle-controls; expect "controls open" "controls open=true" && shot controls
-"$P" act preview-set "ExposureValue=1.0"; expect "control reaches the camera" "fake-control ExposureValue"
+if [ $camera = fake ]; then
+	"$P" act preview-set "ExposureValue=1.0"; expect "control reaches the camera" "control ExposureValue"
+fi
 "$P" act toggle-controls; expect "controls close" "controls open=false"
 
 "$P" act capture; expect "full-res photo: reconfigure" "still-reconfigure" && expect "full-res photo: preview thumbnail" "thumbnail-preview" && expect "full-res photo: viewfinder back" "viewfinder-restored" && shot photo
+if [ $camera = virtual ]; then expect "full-res photo: JPEG written" "photo-jpeg-written" 1 30; fi
 "$P" act full-resolution
 "$P" act capture; expect "fast photo: still" "still-received" 2
 [ "$(count still-reconfigure)" -eq 1 ] && printf 'ok    %-34s\n' "fast photo: no reconfigure" || { printf 'FAIL  %-34s\n' "fast photo: no reconfigure"; failed=$((failed + 1)); }
 
-"$P" point 180 250; sleep 0.3; "$P" click 1.2; expect "long press locks" "lock held=AE/AF" && shot locked
-sleep 0.5
-[ "$(count unlock)" -eq 0 ] && printf 'ok    %-34s\n' "lock survives the release" || { printf 'FAIL  %-34s\n' "lock survives the release"; failed=$((failed + 1)); }
-"$P" point 120 320; sleep 0.3; "$P" click; expect "tap unlocks" "unlock" && expect "tap focuses" "tap " 1
+# Under qemu the sysroot cannot encode JPEG, so a "could not save" toast is
+# sliding in now; a press that lands mid-animation is lost. Let it settle.
+sleep 1
+"$P" point 180 250; sleep 0.3; "$P" click 1.2; expect "long press is handled" "lock" && shot locked
+if grep -q "obscura-perf .* lock held" "$log"; then
+	sleep 0.5
+	[ "$(count unlock)" -eq 0 ] && printf 'ok    %-34s\n' "lock survives the release" || { printf 'FAIL  %-34s\n' "lock survives the release"; failed=$((failed + 1)); }
+	"$P" point 120 320; sleep 0.3; "$P" click; expect "tap unlocks" "unlock"
+elif [ $camera = fake ]; then
+	printf 'FAIL  %-34s\n' "long press locks"; failed=$((failed + 1))
+else
+	echo "skip  lock                               (this camera reports nothing to hold)"
+	"$P" point 120 320; sleep 0.3; "$P" click
+fi
+expect "tap reaches the viewfinder" "tap " 1
 
 "$P" act zoom; expect "zoom 2x" "zoom 2.0" && shot zoom
 "$P" act zoom; "$P" act zoom; expect "zoom back to 1x" "zoom 1.0"
@@ -71,12 +97,22 @@ else
 fi
 "$P" act mode photo; expect "photo mode" "frame-first-presented" $((presented + 3)) 20
 "$P" act preferences; expect "preferences" "preferences" && shot preferences
+if grep -q "exceeds AdwApplicationWindow width" "$log"; then
+	printf 'FAIL  %-34s %s\n' "fits a 360 px window" "$(grep -m1 -o 'requested [0-9]* px' "$log")"; failed=$((failed + 1))
+else
+	printf 'ok    %-34s\n' "fits a 360 px window"
+fi
+if grep -q "obscura-perf .* close-timeout" "$log"; then
+	printf 'FAIL  %-34s %s\n' "cameras close promptly" "$(grep -c close-timeout "$log") close timeouts"; failed=$((failed + 1))
+else
+	printf 'ok    %-34s\n' "cameras close promptly"
+fi
 stop main
 
 # Wide window and landscape phone layouts
-start 1000 680 && expect "wide: first frame" "frame-first-presented" 1 30 && "$P" act toggle-controls && sleep 1 && shot wide-sidebar
+OBSCURA_FAKE=$main_fake start 1000 680 && expect "wide: first frame" "frame-first-presented" 1 30 && "$P" act toggle-controls && sleep 1 && shot wide-sidebar
 stop wide
-start 760 360 && expect "landscape: first frame" "frame-first-presented" 1 30 && shot landscape
+OBSCURA_FAKE=$main_fake start 760 360 && expect "landscape: first frame" "frame-first-presented" 1 30 && shot landscape
 stop landscape
 
 echo "$failed failed; screenshots in $out"

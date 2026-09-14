@@ -4,14 +4,15 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-state=${PREVIEW_STATE:-$root/target/preview/run}
+target=${PREVIEW_TARGET_DIR:-$root/target/preview}
+state=${PREVIEW_STATE:-$target/run}
 sysroot=${SYSROOT:-$HOME/.cache/obscura-sysroot}
 cmd=${1:-help}
 shift || true
 
 native() { pkg-config --exists gtk4 libadwaita-1 libcamera 2>/dev/null; }
 binary() {
-	if native; then echo "$root/target/preview/release/obscura"; else echo "$root/target/preview/aarch64-unknown-linux-musl/release/obscura"; fi
+	if native; then echo "$target/release/obscura"; else echo "$target/aarch64-unknown-linux-musl/release/obscura"; fi
 }
 load() { [ -f "$state/env" ] && . "$state/env"; }
 call() { # object interface.method args...
@@ -28,9 +29,9 @@ input() { echo "$*" > "$state/input"; }
 case $cmd in
 build)
 	if native; then
-		CARGO_TARGET_DIR=$root/target/preview cargo build --release --features preview
+		CARGO_TARGET_DIR=$target cargo build --release --features preview
 	else
-		CARGO_TARGET_DIR=$root/target/preview "$root/build-aux/cross-build.sh" --features preview
+		CARGO_TARGET_DIR=$target "$root/build-aux/cross-build.sh" --features preview
 	fi
 	;;
 start) # [WIDTH HEIGHT]; OBSCURA_FAKE=taimen|denied|nocamera|busy (default taimen)

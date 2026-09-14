@@ -1,0 +1,14 @@
+# A native x86_64 environment for build-aux/preview with a real libcamera:
+# the virtual pipeline handler stands in for the camera.
+FROM docker.io/library/alpine:edge
+RUN apk add --no-cache bash build-base cargo cargo-auditable clang-libclang pkgconf meson \
+        gtk4.0-dev libadwaita-dev gstreamer-dev gst-plugins-base-dev gst-plugins-good gst-plugins-bad gst-plugins-ugly \
+        mutter dbus py3-gobject3 adwaita-icon-theme font-dejavu font-cantarell mesa-dri-gallium glib-dev
+# Obscura's libcamera: pmaports' build with -Dpipelines=auto,virtual. Put its
+# apks (libcamera, libcamera-dev, libcamera-ipa) next to this file.
+COPY apks/ /tmp/apks/
+RUN apk add --no-cache --allow-untrusted /tmp/apks/*.apk && rm -rf /tmp/apks
+COPY virtual.yaml /usr/share/libcamera/pipeline/virtual/virtual.yaml
+ENV XDG_RUNTIME_DIR=/tmp/xdg CARGO_HOME=/cargo
+RUN mkdir -m 700 /tmp/xdg
+WORKDIR /src

@@ -201,7 +201,7 @@ pub fn backend(emit: impl Fn(Event) + Send + 'static) -> Option<LibcameraBackend
                 Ok(Internal::Cmd(Cmd::FullResolution(on))) => full_resolution = on,
                 Ok(Internal::Cmd(Cmd::SetControl { id, value })) => {
                     let name = controls.iter().find(|c| c.id == id).map_or("?", |c| c.name.as_str());
-                    perf!("fake-control", "{name}={value:?}");
+                    perf!("control", "{name}={value:?}");
                 }
                 Ok(Internal::Cmd(Cmd::Capture)) => {
                     if let Some((_, mode, view, info)) = &open {

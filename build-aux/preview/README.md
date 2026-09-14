@@ -45,6 +45,26 @@ release, unlock on tap, zoom, camera and mode switches, recording (skipped
 without a working encoder), Preferences, and the wide and landscape
 layouts. Logs and screenshots are kept in `target/preview/check/`.
 
-The fake camera exercises the interface, not libcamera: the camera worker
-itself (configuration, the still session, closing) still needs the
-`virtual` pipeline on a native build, or a device.
+The fake camera exercises the interface, not libcamera. For the camera
+worker itself (configuration, the viewfinder's dmabufs, the full-resolution
+still session, closing and switching), run the checks against libcamera's
+`virtual` pipeline in a container:
+
+## With a real libcamera: the container
+
+    LIBCAMERA_APKS=/path/to/x86_64/apks build-aux/preview/container/run.sh
+
+`container/Containerfile` is Alpine edge with GTK, libadwaita, GStreamer,
+mutter and a libcamera built with `-Dpipelines=auto,virtual` (put its
+`libcamera`, `libcamera-dev` and `libcamera-ipa` x86_64 apks in
+`LIBCAMERA_APKS`). `container/virtual.yaml` gives it two cameras shaped like
+the Pixel 2 XL's (a 4:3 back camera with half-size and 16:9 modes, a 4:3
+front one). `run.sh` builds the image, mounts the repository at /src, passes
+/dev/udmabuf through for libcamera's buffers, and runs
+`check.sh --camera virtual`, which builds natively and runs the main flows
+with `OBSCURA_FAKE` empty (target/container/check/ has the logs and
+screenshots). Any other command can follow `run.sh` instead.
+
+The virtual pipeline cannot model everything: it has no raw stream,
+controls or exposure metadata, and no autofocus or rotation, so the lock is
+refused (and checked to be) and the taimen fake still covers those.

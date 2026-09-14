@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: CC0-1.0
+# Two cameras shaped like the Pixel 2 XL's, for libcamera's virtual pipeline.
+%YAML 1.1
+---
+"VirtualBack":
+  supported_formats:
+  - width: 4032
+    height: 3024
+    frame_rates:
+    - 15
+    - 30
+  - width: 2016
+    height: 1512
+    frame_rates:
+    - 30
+    - 60
+  - width: 4032
+    height: 2268
+    frame_rates:
+    - 15
+    - 30
+  - width: 2016
+    height: 1134
+    frame_rates:
+    - 30
+    - 60
+  test_pattern: "bars"
+  location: "CameraLocationBack"
+  model: "Virtual Back"
+"VirtualFront":
+  supported_formats:
+  - width: 3280
+    height: 2464
+    frame_rates:
+    - 15
+    - 30
+  test_pattern: "lines"
+  location: "CameraLocationFront"
+  model: "Virtual Front"
