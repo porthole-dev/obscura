@@ -16,6 +16,8 @@ mod imp {
         pub texture: RefCell<Option<gdk::Texture>>,
         pub rotation: Cell<i32>,
         pub mirror: Cell<bool>,
+        /// Fill the widget and crop, instead of fitting inside it.
+        pub cover: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -44,7 +46,7 @@ mod imp {
             let (tw, th) = (texture.width() as f32, texture.height() as f32);
             // Size of the upright image, then scaled to fit ("contain").
             let (uw, uh) = if rotation % 180 == 0 { (tw, th) } else { (th, tw) };
-            let scale = (w / uw).min(h / uh);
+            let scale = if self.cover.get() { (w / uw).max(h / uh) } else { (w / uw).min(h / uh) };
             snapshot.save();
             snapshot.translate(&graphene::Point::new(w / 2.0, h / 2.0));
             snapshot.rotate(rotation as f32);
@@ -80,6 +82,11 @@ impl Viewfinder {
         self.queue_draw();
     }
 
+    pub fn set_cover(&self, cover: bool) {
+        self.imp().cover.set(cover);
+        self.queue_draw();
+    }
+
     pub fn set_rotation(&self, degrees: i32, mirror: bool) {
         self.imp().rotation.set(degrees);
         self.imp().mirror.set(mirror);
@@ -96,7 +103,7 @@ impl Viewfinder {
         let (uw, uh) = if rotation % 180 == 0 { (tw, th) } else { (th, tw) };
         let scale = (w / uw).min(h / uh);
         // Centered, in upright image pixels.
-        let (mut u, mut v) = ((x - w / 2.0) / scale, (y - h / 2.0) / scale);
+        let (mut u, v) = ((x - w / 2.0) / scale, (y - h / 2.0) / scale);
         if self.imp().mirror.get() {
             u = -u;
         }

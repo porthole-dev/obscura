@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="obscura">
+  <schema id="io.github.jertlok.Obscura" path="/io/github/jertlok/Obscura/">
+    <key name="camera" type="s">
+      <default>""</default>
+      <summary>Last used camera</summary>
+      <description>The libcamera id of the camera opened last.</description>
+    </key>
+    <key name="modes" type="a{ss}">
+      <default>{}</default>
+      <summary>Sensor mode per camera</summary>
+      <description>Maps a camera id to the last chosen sensor mode, as WIDTHxHEIGHT.</description>
+    </key>
+    <key name="raw" type="b">
+      <default>false</default>
+      <summary>Save RAW</summary>
+      <description>Write a DNG next to each photo when the camera offers a raw stream.</description>
+    </key>
+    <key name="show-info" type="b">
+      <default>false</default>
+      <summary>Show capture info</summary>
+      <description>Overlay exposure, sensitivity, white balance, focus and frame rate on the viewfinder.</description>
+    </key>
+  </schema>
+</schemalist>

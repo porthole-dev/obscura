@@ -43,7 +43,16 @@ fn orientation(rotation: i32) -> &'static str {
     }
 }
 
+#[link(name = "gsttag-1.0")]
+unsafe extern "C" {
+    // Registers the EXIF-backed capture tags (capturing-shutter-speed,
+    // capturing-iso-speed, ...); nothing else in-process does it first.
+    fn gst_tag_register_musicbrainz_tags();
+}
+
 pub fn save_jpeg(still: &Still, path: &Path) -> Result<()> {
+    // SAFETY: idempotent (GOnce inside) and thread-safe.
+    unsafe { gst_tag_register_musicbrainz_tags() };
     let format = gst_format(still.fourcc).context("viewfinder format has no JPEG path")?;
     let (w, h, stride) = (still.width as usize, still.height as usize, still.stride as usize);
     // Tight rows: the capture buffer may be padded past width * 4.

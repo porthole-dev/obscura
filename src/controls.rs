@@ -79,6 +79,30 @@ fn split_camel(name: &str) -> String {
     out
 }
 
+/// "AnalogueGainModeAuto" -> "Auto": libcamera enumerators repeat their
+/// control's name, or a shared word prefix, in every value.
+fn enum_labels(control: &str, enums: &[(i32, String)]) -> Vec<String> {
+    let names: Vec<&str> = enums.iter().map(|(_, n)| n.as_str()).collect();
+    let first = names.first().copied().unwrap_or("");
+    let mut len = names.iter().map(|n| first.bytes().zip(n.bytes()).take_while(|(a, b)| a == b).count()).min().unwrap_or(0);
+    // Back off to a word boundary: every remainder must start a new word.
+    let boundary = |len: usize| names.iter().all(|n| n[len..].starts_with(|c: char| c.is_ascii_uppercase()));
+    while len > 0 && !boundary(len) {
+        len = first[..len].rfind(|c: char| c.is_ascii_uppercase()).unwrap_or(0);
+    }
+    names
+        .iter()
+        .map(|n| {
+            let rest = match n.strip_prefix(control) {
+                Some(r) if r.starts_with(|c: char| c.is_ascii_uppercase()) => r,
+                _ if names.len() > 1 && len < n.len() => &n[len..],
+                _ => n,
+            };
+            split_camel(rest)
+        })
+        .collect()
+}
+
 fn format_value(name: &str, v: f64) -> String {
     match name {
         "ExposureTime" | "ExposureTimeMetadata" => {
@@ -158,7 +182,8 @@ pub fn build(controls: &[ControlDesc], fps: Option<(f64, f64)>, on_change: OnCha
                 Some(row.upcast())
             }
             (Kind::Int, _) if c.len == 1 && !c.enums.is_empty() => {
-                let names: Vec<&str> = c.enums.iter().map(|(_, n)| n.as_str()).collect();
+                let labels = enum_labels(&c.name, &c.enums);
+                let names: Vec<&str> = labels.iter().map(String::as_str).collect();
                 let model = gtk::StringList::new(&names);
                 let def = c.def.first().copied().unwrap_or(0.0) as i32;
                 let row = adw::ComboRow::builder()
@@ -325,5 +350,11 @@ mod tests {
         assert_eq!(format_value("ExposureTime", 4000.0), "1/250 s");
         assert_eq!(format_value("ExposureTime", 1_000_000.0), "1.0 s");
         assert_eq!(format_value("LensPosition", 0.0), "∞");
+        let e = |v: &[&str]| v.iter().enumerate().map(|(i, s)| (i as i32, s.to_string())).collect::<Vec<_>>();
+        assert_eq!(enum_labels("AnalogueGainMode", &e(&["AnalogueGainModeAuto", "AnalogueGainModeManual"])), ["Auto", "Manual"]);
+        assert_eq!(enum_labels("AeConstraintMode", &e(&["ConstraintNormal", "ConstraintHighlight", "ConstraintShadows"])), ["Normal", "Highlight", "Shadows"]);
+        assert_eq!(enum_labels("AfMode", &e(&["AfModeManual", "AfModeAuto", "AfModeContinuous"])), ["Manual", "Auto", "Continuous"]);
+        assert_eq!(enum_labels("HdrMode", &e(&["HdrModeOff", "HdrModeMultiExposureUnmerged"])), ["Off", "Multi Exposure Unmerged"]);
+        assert_eq!(enum_labels("X", &e(&["AfModeManual", "AfModeMacro"])), ["Manual", "Macro"]);
     }
 }

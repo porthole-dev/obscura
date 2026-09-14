@@ -76,7 +76,8 @@ fn mode_label(m: &Mode) -> String {
         _ if (m.width as f64 / m.height as f64 - 16.0 / 9.0).abs() < 0.03 => "16:9".into(),
         _ => format!("{:.2}:1", m.width as f64 / m.height as f64),
     };
-    format!("{} × {}  ·  {mp:.1} MP  ·  {aspect}", m.width, m.height)
+    let _ = mp;
+    format!("{} × {} ({aspect})", m.width, m.height)
 }
 
 fn gcd(a: u32, b: u32) -> u32 {
@@ -217,6 +218,7 @@ impl Component for App {
             .build();
         let thumbnail = Viewfinder::default();
         thumbnail.set_size_request(48, 48);
+        thumbnail.set_cover(true);
         thumbnail.set_overflow(gtk::Overflow::Hidden);
         let gallery = gtk::Button::builder()
             .child(&thumbnail)
@@ -364,22 +366,20 @@ impl Component for App {
             let s = sender.clone();
             mode_row.connect_selected_notify(move |r| s.input(Msg::SelectMode(r.selected())))
         };
-        let key = gtk::EventControllerKey::new();
-        {
+        // Everything the capture bar does is also an action: keyboard
+        // accelerators, and scriptable over D-Bus (org.gtk.Actions).
+        for (name, accels, msg) in [
+            ("capture", &["space", "Return"][..], (|| Msg::Capture) as fn() -> Msg),
+            ("toggle-controls", &["F9"][..], || Msg::ToggleSidebar),
+            ("switch-camera", &["<Ctrl>Tab"][..], || Msg::SwitchCamera),
+            ("open-last", &["<Ctrl>o"][..], || Msg::OpenLast),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
             let s = sender.clone();
-            key.connect_key_pressed(move |_, keyval, _, _| {
-                if keyval == gdk::Key::space || keyval == gdk::Key::Return {
-                    s.input(Msg::Capture);
-                    return glib::Propagation::Stop;
-                }
-                if keyval == gdk::Key::F9 {
-                    s.input(Msg::ToggleSidebar);
-                    return glib::Propagation::Stop;
-                }
-                glib::Propagation::Proceed
-            });
+            action.connect_activate(move |_, _| s.input(msg()));
+            app.add_action(&action);
+            app.set_accels_for_action(&format!("app.{name}"), accels);
         }
-        window.add_controller(key);
 
         sender.oneshot_command(async { CmdOut::Access(portal::request_access().await) });
 
