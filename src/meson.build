@@ -7,6 +7,12 @@ cargo_env = environment()
 cargo_env.set('LOCALEDIR', localedir)
 
 target_dir = meson.project_build_root() / 'target'
+# A cross build names its target through CARGO_BUILD_TARGET (cargo's own
+# variable), and cargo then writes to target/<triple>/release rather than
+# target/release.
+cargo_target = run_command('sh', '-c', 'printf %s "${CARGO_BUILD_TARGET:-}"',
+  check: true).stdout().strip()
+release_dir = cargo_target == '' ? target_dir / 'release' : target_dir / cargo_target / 'release'
 
 custom_target(
   'cargo-build',
@@ -22,6 +28,6 @@ custom_target(
     '--manifest-path', meson.project_source_root() / 'Cargo.toml',
     '--target-dir', target_dir,
     '&&',
-    'cp', target_dir / 'release' / meson.project_name(), '@OUTPUT@',
+    'cp', release_dir / meson.project_name(), '@OUTPUT@',
   ],
 )
