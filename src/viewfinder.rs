@@ -68,11 +68,7 @@ mod imp {
                 snapshot.scale(-1.0, 1.0);
             }
             snapshot.rotate(self.rotation.get().rem_euclid(360) as f32);
-            snapshot.append_scaled_texture(
-                &texture,
-                gtk::gsk::ScalingFilter::Linear,
-                &graphene::Rect::new(-tw / 2.0, -th / 2.0, tw, th),
-            );
+            snapshot.append_scaled_texture(&texture, gtk::gsk::ScalingFilter::Linear, &graphene::Rect::new(-tw / 2.0, -th / 2.0, tw, th));
             if zoomed {
                 snapshot.pop();
             }
@@ -245,14 +241,7 @@ pub fn texture(frame: Frame) -> Result<gdk::Texture, ()> {
     if let Some(bytes) = frame.bytes.as_ref() {
         let format = memory_format(frame.fourcc).ok_or(())?;
         let bytes = glib::Bytes::from(bytes.as_slice());
-        return Ok(gdk::MemoryTexture::new(
-            frame.width as i32,
-            frame.height as i32,
-            format,
-            &bytes,
-            frame.stride as usize,
-        )
-        .upcast());
+        return Ok(gdk::MemoryTexture::new(frame.width as i32, frame.height as i32, format, &bytes, frame.stride as usize).upcast());
     }
 
     let display = gdk::Display::default().ok_or(())?;
@@ -269,9 +258,7 @@ pub fn texture(frame: Frame) -> Result<gdk::Texture, ()> {
     // SAFETY: the fd outlives the texture; see below.
     builder = unsafe { builder.set_fd(0, frame.fd) };
     if nv12 {
-        builder = unsafe { builder.set_fd(1, frame.fd) }
-            .set_stride(1, frame.stride)
-            .set_offset(1, frame.offset + frame.stride * frame.height);
+        builder = unsafe { builder.set_fd(1, frame.fd) }.set_stride(1, frame.stride).set_offset(1, frame.offset + frame.stride * frame.height);
     }
     // SAFETY: the fd belongs to a capture buffer that is not requeued until
     // `frame` is dropped, which is exactly when GTK calls the release func.

@@ -10,12 +10,12 @@ use relm4::adw::{self, prelude::*};
 use relm4::gtk::{self, gdk, gio, glib};
 use relm4::{Component, ComponentParts, ComponentSender};
 
+use crate::APP_ID;
 use crate::camera::{Backend, CameraInfo, Cmd, Event, Facing, LibcameraBackend, Metadata, Mode, Session, Still};
 use crate::controls::{self, Panel, format_value};
 use crate::portal::{self, Access};
 use crate::video::Recorder;
 use crate::viewfinder::{self, Viewfinder};
-use crate::APP_ID;
 
 pub struct App {
     backend: Option<Rc<LibcameraBackend>>,
@@ -495,7 +495,8 @@ impl App {
                 perf!("thumbnail-preview");
                 if w.controls_toggle.is_active() {
                     // The gallery button is under the controls.
-                    let toast = adw::Toast::builder().title(gettext("Photo taken")).button_label(gettext("_Open")).action_name("app.open-last").timeout(3).build();
+                    let toast =
+                        adw::Toast::builder().title(gettext("Photo taken")).button_label(gettext("_Open")).action_name("app.open-last").timeout(3).build();
                     w.toasts.add_toast(toast);
                 }
             }
@@ -516,7 +517,9 @@ impl App {
     }
 
     fn set_recording_ui(&self, w: &Widgets, on: bool) {
-        for widget in [w.modes.upcast_ref::<gtk::Widget>(), w.switch.upcast_ref(), w.mode_row.upcast_ref(), w.resolution.upcast_ref(), w.timer_button.upcast_ref()] {
+        for widget in
+            [w.modes.upcast_ref::<gtk::Widget>(), w.switch.upcast_ref(), w.mode_row.upcast_ref(), w.resolution.upcast_ref(), w.timer_button.upcast_ref()]
+        {
             widget.set_sensitive(!on);
         }
         w.record_pill.set_visible(on);
@@ -552,11 +555,7 @@ async fn request_access() -> Access {
 /// time first, then gain once time is at its limit.
 fn compensate(exposure: f64, gain: f64, ev: f64, max_exposure: f64, max_gain: f64) -> (f64, f64) {
     let wanted = exposure * 2f64.powf(ev);
-    if wanted <= max_exposure {
-        (wanted, gain)
-    } else {
-        (max_exposure, (gain * wanted / max_exposure).min(max_gain))
-    }
+    if wanted <= max_exposure { (wanted, gain) } else { (max_exposure, (gain * wanted / max_exposure).min(max_gain)) }
 }
 
 /// The newest photo already in the gallery, as a thumbnail.
@@ -583,13 +582,7 @@ impl Component for App {
     type Root = adw::ApplicationWindow;
 
     fn init_root() -> Self::Root {
-        adw::ApplicationWindow::builder()
-            .title(gettext("Obscura"))
-            .default_width(960)
-            .default_height(680)
-            .width_request(360)
-            .height_request(294)
-            .build()
+        adw::ApplicationWindow::builder().title(gettext("Obscura")).default_width(960).default_height(680).width_request(360).height_request(294).build()
     }
 
     fn init(_: (), window: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
@@ -611,9 +604,7 @@ impl Component for App {
         crate::preview::install(&window, &sender);
         // Pictures read best against dark surroundings.
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
-        let settings = gio::SettingsSchemaSource::default()
-            .and_then(|src| src.lookup(APP_ID, true))
-            .map(|_| gio::Settings::new(APP_ID));
+        let settings = gio::SettingsSchemaSource::default().and_then(|src| src.lookup(APP_ID, true)).map(|_| gio::Settings::new(APP_ID));
         let app = relm4::main_application();
         if let Some(s) = &settings {
             s.bind("window-width", &window, "default-width").build();
@@ -707,15 +698,17 @@ impl Component for App {
         }
 
         let grid = viewfinder::grid(&viewfinder);
-        grid_action
-            .bind_property("state", &grid, "visible")
-            .transform_to(|_, v: glib::Variant| v.get::<bool>())
-            .sync_create()
-            .build();
+        grid_action.bind_property("state", &grid, "visible").transform_to(|_, v: glib::Variant| v.get::<bool>()).sync_create().build();
         let focus_ring = gtk::Box::builder().css_classes(["focus-ring"]).width_request(76).height_request(76).visible(false).build();
         let focus_layer = gtk::Fixed::builder().can_target(false).build();
         focus_layer.put(&focus_ring, 0.0, 0.0);
-        let countdown = gtk::Label::builder().css_classes(["countdown", "numeric"]).halign(gtk::Align::Center).valign(gtk::Align::Center).can_target(false).visible(false).build();
+        let countdown = gtk::Label::builder()
+            .css_classes(["countdown", "numeric"])
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .can_target(false)
+            .visible(false)
+            .build();
 
         let record_time = gtk::Label::builder().label("0:00").css_classes(["numeric"]).build();
         let record_pill = gtk::Box::builder()
@@ -777,16 +770,9 @@ impl Component for App {
         for c in [&chips.zoom, &chips.iso, &chips.shutter, &chips.ev, &chips.wb, &chips.focus, &chips.fps] {
             strip.append(c);
         }
-        let chip_scroller = gtk::ScrolledWindow::builder()
-            .child(&strip)
-            .vscrollbar_policy(gtk::PolicyType::Never)
-            .hscrollbar_policy(gtk::PolicyType::External)
-            .build();
-        info_action
-            .bind_property("state", &chip_scroller, "visible")
-            .transform_to(|_, v: glib::Variant| v.get::<bool>())
-            .sync_create()
-            .build();
+        let chip_scroller =
+            gtk::ScrolledWindow::builder().child(&strip).vscrollbar_policy(gtk::PolicyType::Never).hscrollbar_policy(gtk::PolicyType::External).build();
+        info_action.bind_property("state", &chip_scroller, "visible").transform_to(|_, v: glib::Variant| v.get::<bool>()).sync_create().build();
 
         let capture = gtk::Button::builder()
             .icon_name("camera-photo-symbolic")
@@ -828,7 +814,8 @@ impl Component for App {
         bar_content.append(&modes);
         bar_content.append(&buttons);
         // Full-width shade, thumb-width controls.
-        let bar = adw::Clamp::builder().maximum_size(460).tightening_threshold(460).child(&bar_content).valign(gtk::Align::End).css_classes(["capture-bar"]).build();
+        let bar =
+            adw::Clamp::builder().maximum_size(460).tightening_threshold(460).child(&bar_content).valign(gtk::Align::End).css_classes(["capture-bar"]).build();
         let side_bar = |bp: &adw::Breakpoint| {
             // Landscape phones: the controls stand in a column on the right.
             bp.add_setter(&bar, "orientation", Some(&gtk::Orientation::Vertical.to_value()));
@@ -860,7 +847,8 @@ impl Component for App {
 
         // Status page: loading, permission, no camera, errors
         let retry = gtk::Button::builder().label(gettext("_Try Again")).use_underline(true).css_classes(["pill"]).visible(false).build();
-        let open_settings = gtk::Button::builder().label(gettext("Open _Settings")).use_underline(true).css_classes(["pill", "suggested-action"]).visible(false).build();
+        let open_settings =
+            gtk::Button::builder().label(gettext("Open _Settings")).use_underline(true).css_classes(["pill", "suggested-action"]).visible(false).build();
         let status_buttons = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).halign(gtk::Align::Center).build();
         status_buttons.append(&open_settings);
         status_buttons.append(&retry);
@@ -883,14 +871,8 @@ impl Component for App {
         capture_group.add(&mode_row);
         capture_group.add(&raw_row);
         let controls_box = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        let controls_content = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(18)
-            .margin_top(6)
-            .margin_bottom(24)
-            .margin_start(12)
-            .margin_end(12)
-            .build();
+        let controls_content =
+            gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(18).margin_top(6).margin_bottom(24).margin_start(12).margin_end(12).build();
         controls_content.append(&capture_group);
         controls_content.append(&controls_box);
         let controls_scroller = gtk::ScrolledWindow::builder()
@@ -1328,11 +1310,7 @@ impl Component for App {
                     );
                 }
                 let wanted = self.settings.as_ref().map(|s| s.string("camera").to_string()).unwrap_or_default();
-                let index = cameras
-                    .iter()
-                    .position(|c| c.id == wanted)
-                    .or_else(|| cameras.iter().position(|c| c.facing == Facing::Back))
-                    .unwrap_or(0);
+                let index = cameras.iter().position(|c| c.id == wanted).or_else(|| cameras.iter().position(|c| c.facing == Facing::Back)).unwrap_or(0);
                 w.switch.set_visible(cameras.len() > 1);
                 self.cameras = cameras;
                 self.camera = index;
@@ -1469,7 +1447,9 @@ impl Component for App {
                     Some(3) => Some("failed"),
                     _ => None,
                 };
-                if self.focusing && let Some(class) = settled {
+                if self.focusing
+                    && let Some(class) = settled
+                {
                     self.focusing = false;
                     w.focus_ring.remove_css_class("scanning");
                     w.focus_ring.add_css_class(class);
@@ -1511,7 +1491,11 @@ impl Component for App {
             Msg::SwitchCamera => {
                 if self.session.is_some() && self.recorder.is_none() && self.cameras.len() > 1 {
                     let next = (self.camera + 1) % self.cameras.len();
-                    if w.switch.has_css_class("flipped") { w.switch.remove_css_class("flipped") } else { w.switch.add_css_class("flipped") }
+                    if w.switch.has_css_class("flipped") {
+                        w.switch.remove_css_class("flipped")
+                    } else {
+                        w.switch.add_css_class("flipped")
+                    }
                     self.reopen(w, next, None);
                 }
             }
@@ -1633,7 +1617,8 @@ impl Component for App {
                 if let Some(p) = &self.panel
                     && !p.set(&name, value)
                 {
-                    let names: Vec<(i32, String)> = self.session.iter().flat_map(|s| s.controls.iter()).filter(|c| c.name == name).flat_map(|c| c.enums.clone()).collect();
+                    let names: Vec<(i32, String)> =
+                        self.session.iter().flat_map(|s| s.controls.iter()).filter(|c| c.name == name).flat_map(|c| c.enums.clone()).collect();
                     if let Some((_, n)) = names.iter().find(|(v, _)| *v as f64 == value) {
                         let suffix = n.trim_start_matches(name.as_str()).to_string();
                         p.select(&name, &suffix);
@@ -1668,7 +1653,13 @@ impl Component for App {
                 }
             }
             Msg::CycleZoom => {
-                let next = if self.zoom < 1.99 { 2.0 } else if self.zoom < 3.99 { 4.0 } else { 1.0 };
+                let next = if self.zoom < 1.99 {
+                    2.0
+                } else if self.zoom < 3.99 {
+                    4.0
+                } else {
+                    1.0
+                };
                 self.set_zoom(w, next);
             }
             Msg::Preferences => self.preferences(w),
@@ -1749,7 +1740,11 @@ impl Component for App {
                 w.capture.set_icon_name(if video { "media-record-symbolic" } else { "camera-photo-symbolic" });
                 w.capture.set_tooltip_text(Some(&tip));
                 label(&w.capture, &tip);
-                if video { w.capture.add_css_class("video") } else { w.capture.remove_css_class("video") }
+                if video {
+                    w.capture.add_css_class("video")
+                } else {
+                    w.capture.remove_css_class("video")
+                }
                 w.chips.fps.set_visible(video && self.panel.as_ref().is_some_and(|p| p.has("FrameDurationLimits")));
                 // ponytail: zoom crops photos only; recordings stay uncropped.
                 w.chips.zoom.set_visible(!video);
@@ -1763,7 +1758,12 @@ impl Component for App {
                     // Always reopen: video records from the stream it views,
                     // photos view a faster one.
                     let target = if video {
-                        s.modes.iter().copied().filter(|m| wide(m) && m.width >= 1920).min_by_key(|m| m.width).or_else(|| s.modes.iter().copied().filter(wide).max_by_key(|m| m.width))
+                        s.modes
+                            .iter()
+                            .copied()
+                            .filter(|m| wide(m) && m.width >= 1920)
+                            .min_by_key(|m| m.width)
+                            .or_else(|| s.modes.iter().copied().filter(wide).max_by_key(|m| m.width))
                     } else {
                         s.modes.first().copied()
                     };
@@ -1925,8 +1925,16 @@ impl App {
             row
         };
         let capture = adw::PreferencesGroup::builder().title(gettext("Capture")).build();
-        capture.add(&switch("shutter-sound", &gettext("Shutter Sound"), &gettext("Play a sound or vibrate when taking pictures, as the device's feedback settings allow")));
-        capture.add(&switch("full-resolution", &gettext("Full-Resolution Photos"), &gettext("The camera switches to its full photo size for a moment; turn off for photos straight from the viewfinder, with no wait")));
+        capture.add(&switch(
+            "shutter-sound",
+            &gettext("Shutter Sound"),
+            &gettext("Play a sound or vibrate when taking pictures, as the device's feedback settings allow"),
+        ));
+        capture.add(&switch(
+            "full-resolution",
+            &gettext("Full-Resolution Photos"),
+            &gettext("The camera switches to its full photo size for a moment; turn off for photos straight from the viewfinder, with no wait"),
+        ));
         capture.add(&switch("raw", &gettext("Save RAW"), &gettext("Also write a DNG next to each photo, on cameras that provide raw images")));
         let viewfinder = adw::PreferencesGroup::builder().title(gettext("Viewfinder")).build();
         viewfinder.add(&switch("grid", &gettext("Grid"), &gettext("Rule-of-thirds lines to help composition")));

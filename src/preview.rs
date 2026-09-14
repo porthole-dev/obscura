@@ -15,9 +15,9 @@ use std::sync::Arc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
+use relm4::ComponentSender;
 use relm4::adw::prelude::*;
 use relm4::gtk::{self, gio, glib, gsk};
-use relm4::ComponentSender;
 
 use crate::app::{App, Msg};
 use crate::camera::{CameraInfo, Cmd, ControlDesc, Event, Facing, Frame, FrameSlot, Internal, Kind, LibcameraBackend, Metadata, Mode, Session, Still};
@@ -121,7 +121,16 @@ fn taimen_controls() -> Vec<ControlDesc> {
         desc(6, "AnalogueGain", Float, 1, 1.0, 16.0, &[1.0], vec![]),
         desc(7, "AnalogueGainMode", Int, 1, 0.0, 1.0, &[0.0], enums(&["AnalogueGainModeAuto", "AnalogueGainModeManual"])),
         desc(8, "AwbEnable", Bool, 1, 0.0, 1.0, &[1.0], vec![]),
-        desc(9, "AwbMode", Int, 1, 0.0, 6.0, &[0.0], enums(&["AwbAuto", "AwbIncandescent", "AwbTungsten", "AwbFluorescent", "AwbIndoor", "AwbDaylight", "AwbCloudy"])),
+        desc(
+            9,
+            "AwbMode",
+            Int,
+            1,
+            0.0,
+            6.0,
+            &[0.0],
+            enums(&["AwbAuto", "AwbIncandescent", "AwbTungsten", "AwbFluorescent", "AwbIndoor", "AwbDaylight", "AwbCloudy"]),
+        ),
         desc(10, "Brightness", Float, 1, -1.0, 1.0, &[0.0], vec![]),
         desc(11, "ColourGains", Float, 2, 0.0, 8.0, &[1.0, 1.0], vec![]),
         desc(12, "Contrast", Float, 1, 0.0, 2.0, &[1.0], vec![]),
@@ -195,7 +204,18 @@ pub fn backend(emit: impl Fn(Event) + Send + 'static) -> Option<LibcameraBackend
                     let mut info = infos[camera].clone();
                     info.rotation = if camera == 0 { 270 } else { 90 };
                     perf!("camera-started", "fake purpose={} view={}x{}", if video { "Video" } else { "Preview" }, view.width, view.height);
-                    emit(Event::Opened(Session { camera, info: info.clone(), modes, mode, view, fourcc: u32::from_le_bytes(*b"XB24"), controls: controls.clone(), raw: true, fps: Some((5.0, 120.0)), af_windows: false }));
+                    emit(Event::Opened(Session {
+                        camera,
+                        info: info.clone(),
+                        modes,
+                        mode,
+                        view,
+                        fourcc: u32::from_le_bytes(*b"XB24"),
+                        controls: controls.clone(),
+                        raw: true,
+                        fps: Some((5.0, 120.0)),
+                        af_windows: false,
+                    }));
                     open = Some((camera, mode, view, info));
                 }
                 Ok(Internal::Cmd(Cmd::FullResolution(on))) => full_resolution = on,
@@ -212,7 +232,17 @@ pub fn backend(emit: impl Fn(Event) + Send + 'static) -> Option<LibcameraBackend
                         }
                         let (w, h) = (mode.width / 8, mode.height / 8);
                         let front = info.facing == Facing::Front;
-                        emit(Event::Still(Box::new(Still { width: w, height: h, stride: w * 4, fourcc: u32::from_le_bytes(*b"XB24"), rgba: scene(w, h, front), raw: None, metadata: Metadata::default(), info: info.clone(), zoom: 1.0 })));
+                        emit(Event::Still(Box::new(Still {
+                            width: w,
+                            height: h,
+                            stride: w * 4,
+                            fourcc: u32::from_le_bytes(*b"XB24"),
+                            rgba: scene(w, h, front),
+                            raw: None,
+                            metadata: Metadata::default(),
+                            info: info.clone(),
+                            zoom: 1.0,
+                        })));
                         if full_resolution && view != mode {
                             perf!("viewfinder-restored");
                         }
@@ -225,9 +255,19 @@ pub fn backend(emit: impl Fn(Event) + Send + 'static) -> Option<LibcameraBackend
             if let Some((_, _, view, info)) = &open {
                 let (w, h) = (view.width / 8, view.height / 8);
                 let bytes = scene(w, h, info.facing == Facing::Front);
-                worker_slot.deliver(Frame { width: w, height: h, stride: w * 4, fourcc: u32::from_le_bytes(*b"XB24"), fd: -1, offset: 0, bytes: Some(bytes), ret: None }, &emit);
+                worker_slot.deliver(
+                    Frame { width: w, height: h, stride: w * 4, fourcc: u32::from_le_bytes(*b"XB24"), fd: -1, offset: 0, bytes: Some(bytes), ret: None },
+                    &emit,
+                );
                 let mut meta = Metadata::default();
-                for (k, v) in [("AnalogueGain", 4.0), ("ExposureTime", 16666.0), ("ColourTemperature", 4600.0), ("LensPosition", 1.2), ("AfState", 2.0), ("FrameDuration", 33333.0)] {
+                for (k, v) in [
+                    ("AnalogueGain", 4.0),
+                    ("ExposureTime", 16666.0),
+                    ("ColourTemperature", 4600.0),
+                    ("LensPosition", 1.2),
+                    ("AfState", 2.0),
+                    ("FrameDuration", 33333.0),
+                ] {
                     meta.values.insert(k.into(), vec![v]);
                 }
                 meta.values.insert("ColourGains".into(), vec![1.8, 1.5]);

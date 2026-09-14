@@ -172,11 +172,18 @@ pub struct Still {
 pub enum Cmd {
     /// `mode` is the photo (or video) size; for photos the viewfinder may
     /// run a smaller, faster mode of the same shape.
-    Open { camera: usize, mode: Option<Mode>, video: bool },
+    Open {
+        camera: usize,
+        mode: Option<Mode>,
+        video: bool,
+    },
     /// Photos from the full sensor mode (a quick reconfiguration per shot)
     /// rather than from the viewfinder.
     FullResolution(bool),
-    SetControl { id: u32, value: Vec<f64> },
+    SetControl {
+        id: u32,
+        value: Vec<f64>,
+    },
     /// Meter autofocus around a point, in 0..1 sensor coordinates.
     FocusAt(f64, f64),
     Capture,
@@ -249,10 +256,7 @@ impl LibcameraBackend {
         let worker_tx = tx.clone();
         let slot = Arc::<FrameSlot>::default();
         let worker_slot = slot.clone();
-        std::thread::Builder::new()
-            .name("libcamera".into())
-            .spawn(move || run(rx, worker_tx, worker_slot, emit))
-            .expect("spawn libcamera thread");
+        std::thread::Builder::new().name("libcamera".into()).spawn(move || run(rx, worker_tx, worker_slot, emit)).expect("spawn libcamera thread");
         Self { tx, slot }
     }
 
@@ -368,7 +372,10 @@ fn run(rx: Receiver<Internal>, tx: Sender<Internal>, slot: Arc<FrameSlot>, emit:
                         }
                         Err(e) => {
                             emit(Event::Error(e));
-                            session = acquire(&cameras, index).and_then(|cam| Live::open(cam, index, info, Some(mode), Purpose::Preview, &user, &tx)).ok().map(|(l, _)| l);
+                            session = acquire(&cameras, index)
+                                .and_then(|cam| Live::open(cam, index, info, Some(mode), Purpose::Preview, &user, &tx))
+                                .ok()
+                                .map(|(l, _)| l);
                         }
                     }
                 }
@@ -547,11 +554,7 @@ impl Live {
         let want_raw = purpose != Purpose::Preview || view_mode == photo;
         let (mut cfg, raw) = match view_mode.filter(|_| want_raw).and_then(|m| configure(&cam, m, true)) {
             Some(cfg) => (cfg, true),
-            None => (
-                configure(&cam, view_mode.unwrap_or(Mode { width: 1280, height: 720 }), false)
-                    .ok_or("no usable camera configuration")?,
-                false,
-            ),
+            None => (configure(&cam, view_mode.unwrap_or(Mode { width: 1280, height: 720 }), false).ok_or("no usable camera configuration")?, false),
         };
         cam.configure(&mut cfg).map_err(|e| format!("configure: {e}"))?;
         perf!("camera-configured", "{}", cfg.get(0).map(|c| c.to_string_repr()).unwrap_or_default());
@@ -716,10 +719,8 @@ impl Live {
             emit(Event::Metadata(self.meta.clone()));
         }
 
-        let Some((width, height, stride, fourcc)) = self
-            .view
-            .configuration()
-            .map(|c| (c.get_size().width, c.get_size().height, c.get_stride(), c.get_pixel_format().fourcc()))
+        let Some((width, height, stride, fourcc)) =
+            self.view.configuration().map(|c| (c.get_size().width, c.get_size().height, c.get_stride(), c.get_pixel_format().fourcc()))
         else {
             return self.requeue(req);
         };
@@ -903,11 +904,7 @@ fn configure(cam: &ActiveCamera, mode: Mode, raw: bool) -> Option<CameraConfigur
     {
         let mut vf = cfg.get_mut(0)?;
         let offered: Vec<PixelFormat> = vf.formats().pixel_formats().into_iter().collect();
-        if let Some(pf) = VIEW_FORMATS
-            .iter()
-            .map(|c| fourcc(c))
-            .find_map(|code| offered.iter().copied().find(|pf| pf.fourcc() == code && pf.modifier() == 0))
-        {
+        if let Some(pf) = VIEW_FORMATS.iter().map(|c| fourcc(c)).find_map(|code| offered.iter().copied().find(|pf| pf.fourcc() == code && pf.modifier() == 0)) {
             vf.set_pixel_format(pf);
         }
         vf.set_size(Size { width: mode.width, height: mode.height });
@@ -982,12 +979,7 @@ fn describe_controls(cam: &ActiveCamera) -> Vec<ControlDesc> {
             continue;
         }
         let name = control_name(id).unwrap_or_else(|| format!("Control {id}"));
-        let (is_array, size) = unsafe {
-            (
-                libcamera_sys::libcamera_control_id_is_array(p.cast_mut()),
-                libcamera_sys::libcamera_control_id_size(p.cast_mut()),
-            )
-        };
+        let (is_array, size) = unsafe { (libcamera_sys::libcamera_control_id_is_array(p.cast_mut()), libcamera_sys::libcamera_control_id_size(p.cast_mut())) };
         let min = numbers(&info.min());
         let max = numbers(&info.max());
         let def = numbers(&info.def());
@@ -1040,7 +1032,10 @@ fn enumerators(p: *const libcamera_sys::libcamera_control_id_t) -> Vec<(i32, Str
 }
 
 pub fn numbers(v: &ControlValue) -> Vec<f64> {
-    fn f<T: Copy + Into<f64>, const N: usize>(s: &SmallVec<[T; N]>) -> Vec<f64> where [T; N]: smallvec::Array<Item = T> {
+    fn f<T: Copy + Into<f64>, const N: usize>(s: &SmallVec<[T; N]>) -> Vec<f64>
+    where
+        [T; N]: smallvec::Array<Item = T>,
+    {
         s.iter().map(|x| (*x).into()).collect()
     }
     match v {
@@ -1068,7 +1063,6 @@ fn read_metadata(list: &ControlList) -> Metadata {
     Metadata { values }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,7 +1089,13 @@ mod tests {
             def: vec![0.0],
             enums: enums.iter().enumerate().map(|(i, n)| (i as i32, n.to_string())).collect(),
         };
-        let controls = [d(1, "ExposureTimeMode", &["ExposureTimeModeAuto", "ExposureTimeModeManual"]), d(2, "ExposureTime", &[]), d(3, "AnalogueGain", &[]), d(4, "AfMode", &["AfModeManual", "AfModeAuto", "AfModeContinuous"]), d(5, "LensPosition", &[])];
+        let controls = [
+            d(1, "ExposureTimeMode", &["ExposureTimeModeAuto", "ExposureTimeModeManual"]),
+            d(2, "ExposureTime", &[]),
+            d(3, "AnalogueGain", &[]),
+            d(4, "AfMode", &["AfModeManual", "AfModeAuto", "AfModeContinuous"]),
+            d(5, "LensPosition", &[]),
+        ];
         let mut meta = Metadata::default();
         for (k, v) in [("ExposureTime", 16666.0), ("AnalogueGain", 2.0), ("LensPosition", 1.5)] {
             meta.values.insert(k.into(), vec![v]);

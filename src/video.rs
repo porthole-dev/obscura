@@ -156,9 +156,7 @@ impl Recorder {
 
         let (ew, eh) = encode_size(width, height);
         let (cx, cy) = (width - ew, height - eh);
-        let audio = audio_source()
-            .map(|s| format!(" {s} ! queue ! audioconvert ! audioresample ! opusenc ! queue ! mux."))
-            .unwrap_or_default();
+        let audio = audio_source().map(|s| format!(" {s} ! queue ! audioconvert ! audioresample ! opusenc ! queue ! mux.")).unwrap_or_default();
         let desc = format!(
             "appsrc name=src is-live=true do-timestamp=true format=time max-buffers=3 leaky-type=downstream \
              ! queue max-size-buffers=3 leaky=downstream \
@@ -219,16 +217,8 @@ impl Recorder {
         let mut buffer = gst::Buffer::from_mut_slice(data.to_vec());
         {
             let b = buffer.get_mut().unwrap();
-            let strides: &[i32] = if self.format == gst_video::VideoFormat::Nv12 {
-                &[stride as i32, stride as i32]
-            } else {
-                &[stride as i32]
-            };
-            let offsets: &[usize] = if self.format == gst_video::VideoFormat::Nv12 {
-                &[0, (stride * self.height) as usize]
-            } else {
-                &[0]
-            };
+            let strides: &[i32] = if self.format == gst_video::VideoFormat::Nv12 { &[stride as i32, stride as i32] } else { &[stride as i32] };
+            let offsets: &[usize] = if self.format == gst_video::VideoFormat::Nv12 { &[0, (stride * self.height) as usize] } else { &[0] };
             let _ = gst_video::VideoMeta::add_full(b, gst_video::VideoFrameFlags::empty(), self.format, self.width, self.height, offsets, strides);
         }
         match self.src.push_buffer(buffer) {

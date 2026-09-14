@@ -50,11 +50,7 @@ fn unpack(raw: &RawImage, l: &Layout) -> Result<Vec<u16>> {
             (12, true) => {
                 for x in 0..w {
                     let group = &row[x / 2 * 3..];
-                    out.push(if x % 2 == 0 {
-                        ((group[0] as u16) << 4) | (group[2] as u16 & 0xf)
-                    } else {
-                        ((group[1] as u16) << 4) | (group[2] as u16 >> 4)
-                    });
+                    out.push(if x % 2 == 0 { ((group[0] as u16) << 4) | (group[2] as u16 & 0xf) } else { ((group[1] as u16) << 4) | (group[2] as u16 >> 4) });
                 }
             }
             (_, false) => out.extend(row[..w * 2].chunks(2).map(|p| u16::from_le_bytes([p[0], p[1]]))),
@@ -204,11 +200,7 @@ pub fn write(raw: &RawImage, still: &Still, path: &Path) -> Result<()> {
 
     let (w, h) = (raw.width, raw.height);
     let model = still.info.model.as_str();
-    let datetime = relm4::gtk::glib::DateTime::now_local()
-        .ok()
-        .and_then(|d| d.format("%Y:%m:%d %H:%M:%S").ok())
-        .map(|s| s.to_string())
-        .unwrap_or_default();
+    let datetime = relm4::gtk::glib::DateTime::now_local().ok().and_then(|d| d.format("%Y:%m:%d %H:%M:%S").ok()).map(|s| s.to_string()).unwrap_or_default();
 
     let mut exif = Ifd::new();
     if let Some(us) = meta.get("ExposureTime") {
@@ -227,7 +219,15 @@ pub fn write(raw: &RawImage, still: &Still, path: &Path) -> Result<()> {
     ifd.short(262, &[32803]);
     ifd.ascii(271, "Obscura");
     ifd.ascii(272, model);
-    ifd.short(274, &[match still.info.rotation.rem_euclid(360) { 90 => 6, 180 => 3, 270 => 8, _ => 1 }]);
+    ifd.short(
+        274,
+        &[match still.info.rotation.rem_euclid(360) {
+            90 => 6,
+            180 => 3,
+            270 => 8,
+            _ => 1,
+        }],
+    );
     ifd.short(277, &[1]);
     ifd.long(278, &[h]);
     ifd.long(279, &[w * h * 2]);

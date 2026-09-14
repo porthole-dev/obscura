@@ -55,7 +55,11 @@ pub fn warm() {
     crate::video::gst();
     // SAFETY: idempotent (GOnce inside) and thread-safe.
     unsafe { gst_tag_register_musicbrainz_tags() };
-    let Ok(p) = gst::parse::launch("videotestsrc num-buffers=1 ! video/x-raw,width=16,height=16 ! videoconvert ! videoflip method=clockwise ! jpegenc ! jifmux ! fakesink") else { return };
+    let Ok(p) = gst::parse::launch(
+        "videotestsrc num-buffers=1 ! video/x-raw,width=16,height=16 ! videoconvert ! videoflip method=clockwise ! jpegenc ! jifmux ! fakesink",
+    ) else {
+        return;
+    };
     if p.set_state(gst::State::Playing).is_ok() {
         let _ = p.bus().map(|b| b.timed_pop_filtered(gst::ClockTime::from_seconds(10), &[gst::MessageType::Eos, gst::MessageType::Error]));
     }
@@ -72,14 +76,19 @@ pub fn save_jpeg(still: &Still, path: &Path) -> Result<()> {
     // The capture buffer as it is, strides and planes described by a
     // VideoMeta: RGB rows padded past width * 4, or NV12's two planes.
     let video_format = gst_video::VideoFormat::from_string(format);
-    let (offsets, strides): (&[usize], &[i32]) = if video_format == gst_video::VideoFormat::Nv12 {
-        (&[0, stride * h], &[stride as i32, stride as i32])
-    } else {
-        (&[0], &[stride as i32])
-    };
+    let (offsets, strides): (&[usize], &[i32]) =
+        if video_format == gst_video::VideoFormat::Nv12 { (&[0, stride * h], &[stride as i32, stride as i32]) } else { (&[0], &[stride as i32]) };
     let mut buffer = gst::Buffer::from_mut_slice(still.rgba.clone());
-    gst_video::VideoMeta::add_full(buffer.get_mut().context("buffer")?, gst_video::VideoFrameFlags::empty(), video_format, w as u32, h as u32, offsets, strides)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    gst_video::VideoMeta::add_full(
+        buffer.get_mut().context("buffer")?,
+        gst_video::VideoFrameFlags::empty(),
+        video_format,
+        w as u32,
+        h as u32,
+        offsets,
+        strides,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let pipeline = gst::parse::launch(&format!(
         "appsrc name=src ! videoconvert ! {}videoflip method={} ! jpegenc quality=92 ! jifmux name=mux ! filesink location=\"{}\"",
