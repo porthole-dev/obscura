@@ -530,13 +530,20 @@ fn settled(expect: (Option<f64>, Option<f64>), exposure: Option<f64>, gain: Opti
     frames >= 8 || (near(expect.0, exposure) && near(expect.1, gain))
 }
 
-fn control_value(desc: &ControlDesc, value: &[f64]) -> Option<ControlValue> {
-    Some(match desc.kind {
-        Kind::Bool => ControlValue::Bool(value.iter().map(|x| *x != 0.0).collect()),
-        Kind::Int if control_type(desc.id) == Some(LIBCAMERA_INT64) => ControlValue::Int64(value.iter().map(|x| x.round() as i64).collect()),
-        Kind::Int => ControlValue::Int32(value.iter().map(|x| x.round() as i32).collect()),
-        Kind::Float => ControlValue::Float(value.iter().map(|x| *x as f32).collect()),
-        Kind::Other => return None,
+/// The value libcamera expects for control `id`, typed by the control's own
+/// declaration. Its IPAs read controls with a typed get() that aborts on any
+/// mismatch, so the type must never be guessed from the reported range.
+fn control_value(id: u32, value: &[f64]) -> Option<ControlValue> {
+    use libcamera_sys::libcamera_control_type as T;
+    Some(match control_type(id)? {
+        T::LIBCAMERA_CONTROL_TYPE_BOOL => ControlValue::Bool(value.iter().map(|x| *x != 0.0).collect()),
+        T::LIBCAMERA_CONTROL_TYPE_BYTE => ControlValue::Byte(value.iter().map(|x| x.round() as u8).collect()),
+        T::LIBCAMERA_CONTROL_TYPE_UINT16 => ControlValue::Uint16(value.iter().map(|x| x.round() as u16).collect()),
+        T::LIBCAMERA_CONTROL_TYPE_UINT32 => ControlValue::Uint32(value.iter().map(|x| x.round() as u32).collect()),
+        T::LIBCAMERA_CONTROL_TYPE_INT32 => ControlValue::Int32(value.iter().map(|x| x.round() as i32).collect()),
+        T::LIBCAMERA_CONTROL_TYPE_INT64 => ControlValue::Int64(value.iter().map(|x| x.round() as i64).collect()),
+        T::LIBCAMERA_CONTROL_TYPE_FLOAT => ControlValue::Float(value.iter().map(|x| *x as f32).collect()),
+        _ => return None,
     })
 }
 
@@ -610,7 +617,7 @@ impl Live {
         let controls = describe_controls(&cam);
         let mut start = ControlList::new();
         for (id, value) in initial {
-            if let Some(v) = controls.iter().find(|c| c.id == *id).and_then(|d| control_value(d, value)) {
+            if let Some(v) = controls.iter().find(|c| c.id == *id).and_then(|d| control_value(d.id, value)) {
                 let _ = start.set_raw(*id, v);
             }
         }
@@ -673,7 +680,7 @@ impl Live {
         let Some(desc) = self.info.controls.iter().find(|c| c.id == id) else {
             return;
         };
-        let Some(v) = control_value(desc, value) else { return };
+        let Some(v) = control_value(desc.id, value) else { return };
         perf!("control", "{}={value:?}", desc.name);
         // Triggers are one-shot; everything else is a setting to carry over.
         if desc.name != "AfTrigger" {
@@ -963,8 +970,6 @@ fn id_by_name(cam: &ActiveCamera, name: &str) -> Option<u32> {
     cam.controls().into_iter().map(|(id, _)| id).find(|id| control_name(*id).as_deref() == Some(name))
 }
 
-const LIBCAMERA_INT64: u32 = 4;
-
 fn control_ptr(id: u32) -> *const libcamera_sys::libcamera_control_id_t {
     unsafe { libcamera_sys::libcamera_control_from_id(id as _) }
 }
@@ -1074,6 +1079,16 @@ fn read_metadata(list: &ControlList) -> Metadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn controls_are_sent_with_their_declared_type() {
+        let id = |name: &str| (1..100_000).find(|id| control_name(*id).as_deref() == Some(name)).unwrap();
+        // FrameDurationLimits went out as Int32 and aborted libcamera's AGC.
+        assert!(matches!(control_value(id("FrameDurationLimits"), &[33333.0, 33333.0]), Some(ControlValue::Int64(_))));
+        assert!(matches!(control_value(id("ExposureTime"), &[20000.0]), Some(ControlValue::Int32(_))));
+        assert!(matches!(control_value(id("AnalogueGain"), &[4.0]), Some(ControlValue::Float(_))));
+        assert!(matches!(control_value(id("AwbEnable"), &[1.0]), Some(ControlValue::Bool(_))));
+    }
 
     #[test]
     fn still_waits_for_the_held_exposure() {
