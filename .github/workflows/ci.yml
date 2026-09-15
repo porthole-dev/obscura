@@ -1,8 +1,11 @@
-# Lint, test, build, and check commit trailers on every push and pull request.
+# Lint, test, build, and check commit trailers on pushes to main and on every
+# pull request. Tags run the release workflow instead, and a branch is checked
+# by its pull request.
 name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -19,7 +22,8 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    name: Lint
+    runs-on: ubuntu-24.04
     container:
       image: docker.io/library/alpine:edge
       options: --security-opt seccomp=unconfined
@@ -36,7 +40,8 @@ jobs:
           cargo clippy --release --locked --features "preview pipewire-controls" -- -D warnings
 
   test:
-    runs-on: ubuntu-latest
+    name: Test
+    runs-on: ubuntu-24.04
     container:
       image: docker.io/library/alpine:edge
       options: --security-opt seccomp=unconfined
@@ -59,13 +64,14 @@ jobs:
         run: build-aux/preview/check.sh
       - name: Screenshots and logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: preview-check
           path: target/preview/check/
 
   build:
-    runs-on: ubuntu-latest
+    name: Build
+    runs-on: ubuntu-24.04
     container:
       image: docker.io/library/alpine:edge
       options: --security-opt seccomp=unconfined
@@ -79,6 +85,7 @@ jobs:
       - run: DESTDIR="$PWD/_install" meson install -C _build --no-rebuild
 
   commit-check:
+    name: Commit check
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
