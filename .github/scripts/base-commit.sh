@@ -19,6 +19,8 @@ push)
 		echo "$before"
 	else
 		first=$(jq -r '.commits[0].id // empty' "$event")
-		if [ -n "$first" ]; then git rev-parse "$first^"; fi
+		# A root commit (the first push to a new repository) has no parent:
+		# print nothing, so there is no range to check.
+		if [ -n "$first" ]; then git rev-parse -q --verify "$first^" || true; fi
 	fi ;;
 esac
