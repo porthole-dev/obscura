@@ -1,0 +1,172 @@
+# Release a pushed version tag: create the GitHub release, with notes from the
+# commits since the previous tag, then open or update a pull request in
+# porthole-dev/pmaports that moves this app's aport to the new version.
+#
+# The pull request needs the PMAPORTS_TOKEN repository secret: a fine-grained
+# token with owner porthole-dev, access to the pmaports repository only, and
+# read and write permission for Contents and Pull requests. Without it that
+# job is skipped with a notice; the release is still created.
+#
+# A manual run rehearses a release for an existing tag. With dry-run (the
+# default) it publishes nothing and pushes nothing; it prints the notes, the
+# archive checksum and, when the token is set, the aport change.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release, for example v0.2.0
+        type: string
+        required: true
+      dry-run:
+        description: Only show what would be released
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  APORT: testing/obscura
+  PMAPORTS: porthole-dev/pmaports
+  PMAPORTS_BRANCH: taimen-bringup
+  TAG: ${{ inputs.tag || github.ref_name }}
+  DRY_RUN: ${{ inputs.dry-run || false }}
+
+jobs:
+  release:
+    name: GitHub release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Write the release notes
+        run: |
+          set -eu
+          git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null ||
+            { echo "::error::No tag $TAG"; exit 1; }
+          previous=$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null || true)
+          {
+            if [ -n "$previous" ]; then
+              echo "## Changes since $previous"
+              range=$previous..$TAG
+            else
+              echo "## Changes"
+              range=$TAG
+            fi
+            echo
+            git log --no-merges --format='- %s (%h)' "$range"
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists; left unchanged"
+          elif [ "$DRY_RUN" = true ]; then
+            echo "::notice::Dry run: release $TAG not created"
+          else
+            case "$TAG" in *-*) prerelease=--prerelease ;; *) prerelease= ;; esac
+            gh release create "$TAG" --verify-tag $prerelease \
+              --title "${GITHUB_REPOSITORY#*/} ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
+  pmaports:
+    name: Update the pmaports aport
+    needs: release
+    runs-on: ubuntu-24.04
+    steps:
+      - id: check
+        name: Check the tag and the token
+        env:
+          PMAPORTS_TOKEN: ${{ secrets.PMAPORTS_TOKEN }}
+        run: |
+          if ! printf '%s\n' "$TAG" | grep -qxE 'v[0-9]+(\.[0-9]+)*'; then
+            echo "::notice::$TAG is not a plain version tag (vX.Y.Z); the aport is not updated"
+            exit 0
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          if [ -n "$PMAPORTS_TOKEN" ]; then
+            echo "token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::PMAPORTS_TOKEN is not set: no pull request is opened in $PMAPORTS"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.check.outputs.version
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Checksum the source archive
+        if: steps.check.outputs.version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # The archive abuild downloads from
+          # https://github.com/<repository>/archive/refs/tags/<tag>.tar.gz,
+          # which redirects to codeload. github.com does not accept this job's
+          # token for a private repository; codeload does, and serves the same bytes.
+          name=${GITHUB_REPOSITORY#*/}
+          curl -fsSL --retry 3 -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/source.tar.gz" \
+            "https://codeload.github.com/$GITHUB_REPOSITORY/tar.gz/refs/tags/$TAG"
+          top=$(tar -tzf "$RUNNER_TEMP/source.tar.gz" 2>/dev/null | head -n1)
+          [ "$top" = "$name-${TAG#v}/" ] || { echo "::error::Unexpected archive layout: $top"; exit 1; }
+          sum=$(sha512sum "$RUNNER_TEMP/source.tar.gz" | cut -d' ' -f1)
+          echo "$sum  $name-${TAG#v}.tar.gz"
+          echo "SHA512=$sum" >> "$GITHUB_ENV"
+      - name: Open or update the pull request
+        if: steps.check.outputs.token
+        env:
+          GH_TOKEN: ${{ secrets.PMAPORTS_TOKEN }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -eu
+          gh auth setup-git
+          git clone -q --depth 1 --filter=blob:none --sparse --branch "$PMAPORTS_BRANCH" \
+            "https://github.com/$PMAPORTS.git" "$RUNNER_TEMP/pmaports"
+          cd "$RUNNER_TEMP/pmaports"
+          git sparse-checkout set "$APORT"
+          subject=$(sh "$GITHUB_WORKSPACE/.github/scripts/bump-aport.sh" "$APORT/APKBUILD" "$VERSION" "$SHA512")
+          if [ -z "$subject" ]; then
+            echo "::notice::$APORT on $PMAPORTS_BRANCH is already at $TAG"
+            exit 0
+          fi
+          git diff
+          # The aport's maintainer authors the change and signs it off before merge.
+          maintainer=$(sed -n 's/^maintainer="\(.*\)"$/\1/p' "$APORT/APKBUILD")
+          git -c user.name="${maintainer% <*}" -c user.email="$(echo "${maintainer##*<}" | tr -d '>')" \
+            commit -q -a -F - <<EOF
+          $APORT: $subject
+
+          Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG
+          EOF
+          branch=release/${GITHUB_REPOSITORY#*/}
+          if [ "$DRY_RUN" = true ]; then
+            git show --stat HEAD
+            echo "::notice::Dry run: $branch not pushed and no pull request opened"
+            exit 0
+          fi
+          git push -q --force origin "HEAD:refs/heads/$branch"
+          body="Moves \`$APORT\` to [$TAG](https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG), opened by the release workflow of $GITHUB_REPOSITORY. The checksum is that of the tag's source archive. Sign off before merging."
+          number=$(gh pr list -R "$PMAPORTS" --head "$branch" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr edit "$number" -R "$PMAPORTS" --title "$APORT: $subject" --body "$body"
+          else
+            gh pr create -R "$PMAPORTS" --base "$PMAPORTS_BRANCH" --head "$branch" \
+              --title "$APORT: $subject" --body "$body"
+          fi
