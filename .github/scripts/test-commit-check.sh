@@ -14,6 +14,8 @@ git commit -q --allow-empty -m base
 expect() {
 	result=$1 flags=$2
 	git commit -q --allow-empty -m "$3"
+	# $flags is empty or one word: unquoted so an empty one passes nothing.
+	# shellcheck disable=SC2086
 	if sh "$check" HEAD~1 HEAD $flags >/dev/null 2>&1; then got=pass; else got=fail; fi
 	if [ "$got" != "$result" ]; then
 		echo "FAIL: expected $result, got $got for: $3" >&2
