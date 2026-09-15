@@ -8,7 +8,7 @@ project(
 i18n = import('i18n')
 gnome = import('gnome')
 
-app_id = 'io.github.jertlok.Obscura'
+app_id = 'io.github.porthole_dev.Obscura'
 
 dependency('gtk4', version: '>= 4.20')
 dependency('libadwaita-1', version: '>= 1.8')

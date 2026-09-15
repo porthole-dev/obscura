@@ -6,7 +6,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: obscura\n"
-"Report-Msgid-Bugs-To: https://github.com/Jertlok/obscura/issues\n"
+"Report-Msgid-Bugs-To: https://github.com/porthole-dev/obscura/issues\n"
 "PO-Revision-Date: 2026-09-15 00:30+0200\n"
 "Last-Translator: Giuseppe Maggio <jertlok@proton.me>\n"
 "Language-Team: Italian <gnome-it-list@gnome.org>\n"
@@ -57,8 +57,8 @@ msgstr "Autoscatto: disattivato"
 msgid "Self-Timer: {} Seconds"
 msgstr "Autoscatto: {} secondi"
 
-#: src/app.rs:586 src/app.rs:989 data/io.github.jertlok.Obscura.desktop.in:2
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:7
+#: src/app.rs:586 src/app.rs:989 data/io.github.porthole_dev.Obscura.desktop.in:2
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:7
 msgid "Obscura"
 msgstr "Obscura"
 
@@ -158,7 +158,7 @@ msgstr "Apri _Impostazioni"
 msgid "Starting Camera…"
 msgstr "Avvio della fotocamera…"
 
-#: src/app.rs:877 src/app.rs:1924 data/io.github.jertlok.Obscura.gschema.xml:28
+#: src/app.rs:877 src/app.rs:1924 data/io.github.porthole_dev.Obscura.gschema.xml:28
 msgid "Save RAW"
 msgstr "Salva RAW"
 
@@ -192,7 +192,7 @@ msgid "Video Mode"
 msgstr "Modalità video"
 
 #: src/app.rs:1018 src/app.rs:1926
-#: data/io.github.jertlok.Obscura.gschema.xml:53
+#: data/io.github.porthole_dev.Obscura.gschema.xml:53
 msgid "Grid"
 msgstr "Griglia"
 
@@ -454,167 +454,167 @@ msgstr "Automatica"
 msgid "Auto"
 msgstr "Auto"
 
-#: data/io.github.jertlok.Obscura.desktop.in:3
+#: data/io.github.porthole_dev.Obscura.desktop.in:3
 msgid "Camera"
 msgstr "Fotocamera"
 
-#: data/io.github.jertlok.Obscura.desktop.in:4
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:8
+#: data/io.github.porthole_dev.Obscura.desktop.in:4
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:8
 msgid "Take photos and videos with every control your camera has"
 msgstr "Scatta foto e registra video con tutti i controlli della fotocamera"
 
-#: data/io.github.jertlok.Obscura.desktop.in:6
+#: data/io.github.porthole_dev.Obscura.desktop.in:6
 msgid "camera;photo;picture;video;webcam;raw;dng;manual;exposure;focus;"
 msgstr "fotocamera;foto;immagine;video;webcam;raw;dng;manuale;esposizione;fuoco;camera;photo;"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:10
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:10
 msgid ""
 "Obscura is a camera app for phones and computers that talks to libcamera "
 "directly, so it can offer whatever the camera itself can do."
 msgstr "Obscura è un'app fotocamera per telefoni e computer che comunica direttamente con libcamera, così può offrire tutto ciò che la fotocamera sa fare."
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:15
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:15
 msgid ""
 "Controls generated from what the camera reports: exposure time, sensitivity, "
 "exposure compensation, white balance, focus, frame rate and more"
 msgstr "Controlli generati da ciò che la fotocamera dichiara: tempo di posa, sensibilità, compensazione dell'esposizione, bilanciamento del bianco, messa a fuoco, frequenza dei fotogrammi e altro"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:16
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:16
 msgid ""
 "Every sensor mode the camera offers, from full resolution to high frame rate "
 "binned modes"
 msgstr "Tutte le modalità del sensore, dalla piena risoluzione alle modalità con binning ad alta frequenza di fotogrammi"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:17
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:17
 msgid "RAW photos as DNG alongside JPEG"
 msgstr "Foto RAW in DNG insieme al JPEG"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:18
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:18
 msgid "Live readout of exposure, sensitivity, colour temperature and focus"
 msgstr "Lettura in tempo reale di esposizione, sensibilità, temperatura colore e messa a fuoco"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:22
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:22
 msgid "Giuseppe Maggio"
 msgstr "Giuseppe Maggio"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:29
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:29
 msgid "The viewfinder, with exposure and focus at a glance"
 msgstr "Il mirino, con esposizione e messa a fuoco a colpo d'occhio"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:33
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:33
 msgid "Every control the camera has"
 msgstr "Tutti i controlli della fotocamera"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:37
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:37
 msgid "Video, with resolution and frame rate"
 msgstr "Video, con risoluzione e frequenza dei fotogrammi"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:54
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:54
 msgid "A redesigned camera for phones and desktops."
 msgstr "Una fotocamera ridisegnata per telefoni e computer."
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:56
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:56
 msgid "Pictures come out upright, including landscape shots on phones"
 msgstr "Le foto escono dritte, anche quelle in orizzontale sui telefoni"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:57
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:57
 msgid ""
 "Current exposure, white balance and focus over the viewfinder, one tap from "
 "their controls"
 msgstr "Esposizione, bilanciamento del bianco e messa a fuoco attuali sopra il mirino, a un tocco dai relativi controlli"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:58
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:58
 msgid "Tap to focus, digital zoom, grid, self-timer, and shutter feedback"
 msgstr "Tocco per mettere a fuoco, zoom digitale, griglia, autoscatto e feedback dello scatto"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:59
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:59
 msgid "Controls in a sidebar or a bottom sheet, following the window size"
 msgstr "Controlli in una barra laterale o in un pannello inferiore, secondo la dimensione della finestra"
 
-#: data/io.github.jertlok.Obscura.metainfo.xml.in:60
+#: data/io.github.porthole_dev.Obscura.metainfo.xml.in:60
 msgid "Faster start and a viewfinder that never falls behind"
 msgstr "Avvio più rapido e un mirino che non resta mai indietro"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:6
+#: data/io.github.porthole_dev.Obscura.gschema.xml:6
 msgid "Window width"
 msgstr "Larghezza della finestra"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:10
+#: data/io.github.porthole_dev.Obscura.gschema.xml:10
 msgid "Window height"
 msgstr "Altezza della finestra"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:14
+#: data/io.github.porthole_dev.Obscura.gschema.xml:14
 msgid "Window maximized"
 msgstr "Finestra massimizzata"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:18
+#: data/io.github.porthole_dev.Obscura.gschema.xml:18
 msgid "Last used camera"
 msgstr "Ultima fotocamera usata"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:19
+#: data/io.github.porthole_dev.Obscura.gschema.xml:19
 msgid "The libcamera id of the camera opened last."
 msgstr "L'id libcamera dell'ultima fotocamera aperta."
 
-#: data/io.github.jertlok.Obscura.gschema.xml:23
+#: data/io.github.porthole_dev.Obscura.gschema.xml:23
 msgid "Sensor mode per camera"
 msgstr "Modalità del sensore per fotocamera"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:24
+#: data/io.github.porthole_dev.Obscura.gschema.xml:24
 msgid "Maps a camera id to the last chosen sensor mode, as WIDTHxHEIGHT."
 msgstr "Associa l'id di una fotocamera all'ultima modalità del sensore scelta, nella forma LARGHEZZAxALTEZZA."
 
-#: data/io.github.jertlok.Obscura.gschema.xml:29
+#: data/io.github.porthole_dev.Obscura.gschema.xml:29
 msgid "Write a DNG next to each photo when the camera offers a raw stream."
 msgstr "Salva un DNG accanto a ogni foto quando la fotocamera offre un flusso RAW."
 
-#: data/io.github.jertlok.Obscura.gschema.xml:33
+#: data/io.github.porthole_dev.Obscura.gschema.xml:33
 msgid "Show capture info"
 msgstr "Mostra informazioni di scatto"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:34
+#: data/io.github.porthole_dev.Obscura.gschema.xml:34
 msgid ""
 "Show exposure, sensitivity, white balance, focus and frame rate over the "
 "viewfinder."
 msgstr "Mostra esposizione, sensibilità, bilanciamento del bianco, messa a fuoco e frequenza dei fotogrammi sopra il mirino."
 
-#: data/io.github.jertlok.Obscura.gschema.xml:38
+#: data/io.github.porthole_dev.Obscura.gschema.xml:38
 msgid "Full-resolution photos"
 msgstr "Foto a piena risoluzione"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:39
+#: data/io.github.porthole_dev.Obscura.gschema.xml:39
 msgid ""
 "Take photos at the full photo size, switching the camera from its faster "
 "viewfinder mode for a moment; when off, photos come straight from the "
 "viewfinder."
 msgstr "Scatta le foto alla risoluzione piena, facendo uscire per un istante la fotocamera dalla modalità più rapida del mirino; se disattivato, le foto arrivano direttamente dal mirino."
 
-#: data/io.github.jertlok.Obscura.gschema.xml:43
+#: data/io.github.porthole_dev.Obscura.gschema.xml:43
 msgid "Shutter sound"
 msgstr "Suono dell'otturatore"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:44
+#: data/io.github.porthole_dev.Obscura.gschema.xml:44
 msgid ""
 "Play the feedback theme's shutter sound or vibration when taking a picture "
 "or starting and stopping a recording."
 msgstr "Riproduce il suono dell'otturatore o la vibrazione del tema di feedback quando si scatta una foto o si avvia e interrompe una registrazione."
 
-#: data/io.github.jertlok.Obscura.gschema.xml:48
+#: data/io.github.porthole_dev.Obscura.gschema.xml:48
 msgid "Video mode"
 msgstr "Modalità video"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:49
+#: data/io.github.porthole_dev.Obscura.gschema.xml:49
 msgid "Whether the shutter records video rather than taking photos."
 msgstr "Indica se il pulsante di scatto registra video invece di scattare foto."
 
-#: data/io.github.jertlok.Obscura.gschema.xml:54
+#: data/io.github.porthole_dev.Obscura.gschema.xml:54
 msgid "Draw a rule-of-thirds grid over the viewfinder."
 msgstr "Disegna una griglia della regola dei terzi sopra il mirino."
 
-#: data/io.github.jertlok.Obscura.gschema.xml:59
+#: data/io.github.porthole_dev.Obscura.gschema.xml:59
 msgid "Self-timer"
 msgstr "Autoscatto"
 
-#: data/io.github.jertlok.Obscura.gschema.xml:60
+#: data/io.github.porthole_dev.Obscura.gschema.xml:60
 msgid ""
 "Seconds between pressing the shutter and taking the picture; 0 for none."
 msgstr "Secondi tra la pressione del pulsante di scatto e lo scatto della foto; 0 per nessuno."

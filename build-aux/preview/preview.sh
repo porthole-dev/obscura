@@ -18,11 +18,11 @@ load() { [ -f "$state/env" ] && . "$state/env"; }
 call() { # object interface.method args...
 	local path=$1 method=$2
 	shift 2
-	gdbus call --session --timeout 10 --dest "${DEST:-io.github.jertlok.Obscura}" --object-path "$path" --method "$method" "$@"
+	gdbus call --session --timeout 10 --dest "${DEST:-io.github.porthole_dev.Obscura}" --object-path "$path" --method "$method" "$@"
 }
 act() { # action [string parameter]
-	if [ $# -gt 1 ]; then call /io/github/jertlok/Obscura org.gtk.Actions.Activate "$1" "[<'$2'>]" "{}" >/dev/null
-	else call /io/github/jertlok/Obscura org.gtk.Actions.Activate "$1" "[]" "{}" >/dev/null; fi
+	if [ $# -gt 1 ]; then call /io/github/porthole_dev/Obscura org.gtk.Actions.Activate "$1" "[<'$2'>]" "{}" >/dev/null
+	else call /io/github/porthole_dev/Obscura org.gtk.Actions.Activate "$1" "[]" "{}" >/dev/null; fi
 }
 input() { echo "$*" > "$state/input"; }
 
@@ -40,7 +40,7 @@ start) # [WIDTH HEIGHT]; OBSCURA_FAKE=taimen|denied|nocamera|busy (default taime
 	rm -rf "$state" && mkdir -p "$state/shots" "$state/config/glib-2.0/settings" "$state/schemas"
 	bin=$(binary)
 	# PREVIEW_COMMAND runs something else in the session instead, such as
-	# `flatpak run io.github.jertlok.Obscura//devel`.
+	# `flatpak run io.github.porthole_dev.Obscura//devel`.
 	[ -n "${PREVIEW_COMMAND:-}" ] || [ -x "$bin" ] || { echo "no preview build at $bin: run '$0 build'" >&2; exit 1; }
 	run=()
 	if [ -n "${PREVIEW_COMMAND:-}" ]; then
@@ -58,7 +58,7 @@ start) # [WIDTH HEIGHT]; OBSCURA_FAKE=taimen|denied|nocamera|busy (default taime
 	fi
 	cp "$root"/data/*.gschema.xml "$state/schemas/"
 	glib-compile-schemas "$state/schemas"
-	printf '[io/github/jertlok/Obscura]\nwindow-width=%s\nwindow-height=%s\n%b\n' "$width" "$height" "${PREVIEW_SETTINGS:-}" > "$state/config/glib-2.0/settings/keyfile"
+	printf '[io/github/porthole_dev/Obscura]\nwindow-width=%s\nwindow-height=%s\n%b\n' "$width" "$height" "${PREVIEW_SETTINGS:-}" > "$state/config/glib-2.0/settings/keyfile"
 	# PREVIEW_REDUCED_MOTION=1: no animations; PREVIEW_LANGUAGE=it: that
 	# translation, compiled from po/.
 	if [ -n "${PREVIEW_REDUCED_MOTION:-}" ]; then

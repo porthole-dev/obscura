@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist gettext-domain="obscura">
-  <schema id="io.github.jertlok.Obscura" path="/io/github/jertlok/Obscura/">
+  <schema id="io.github.porthole_dev.Obscura" path="/io/github/porthole_dev/Obscura/">
     <key name="window-width" type="i">
       <default>960</default>
       <summary>Window width</summary>

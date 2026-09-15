@@ -72,9 +72,9 @@ tool() {
 }
 
 # Data files
-tool "metainfo validates" appstreamcli validate --no-net --pedantic "$root/data/io.github.jertlok.Obscura.metainfo.xml.in"
-cp "$root/data/io.github.jertlok.Obscura.desktop.in" "$out/io.github.jertlok.Obscura.desktop"
-tool "desktop file validates" desktop-file-validate "$out/io.github.jertlok.Obscura.desktop"
+tool "metainfo validates" appstreamcli validate --no-net --pedantic "$root/data/io.github.porthole_dev.Obscura.metainfo.xml.in"
+cp "$root/data/io.github.porthole_dev.Obscura.desktop.in" "$out/io.github.porthole_dev.Obscura.desktop"
+tool "desktop file validates" desktop-file-validate "$out/io.github.porthole_dev.Obscura.desktop"
 tool "settings schema compiles" glib-compile-schemas --strict --dry-run "$root/data"
 for po in "$root"/po/*.po; do tool "translation $(basename "$po")" msgfmt -c -o /dev/null "$po"; done
 start() { "$P" start "$@" >/dev/null || { echo "FAIL  start $*"; failed=$((failed + 1)); return 1; }; }

@@ -993,8 +993,8 @@ impl Component for App {
                     .version(env!("CARGO_PKG_VERSION"))
                     .license_type(gtk::License::Gpl30)
                     .comments(gettext("Take pictures and videos, with every control your camera has"))
-                    .website("https://github.com/Jertlok/obscura")
-                    .issue_url("https://github.com/Jertlok/obscura/issues")
+                    .website("https://github.com/porthole-dev/obscura")
+                    .issue_url("https://github.com/porthole-dev/obscura/issues")
                     .developers(["Giuseppe Maggio"])
                     .copyright("© 2026 Giuseppe Maggio")
                     // Translators: your names, one per line.

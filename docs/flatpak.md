@@ -6,8 +6,8 @@ cargo feature (on in the sandboxed manifest, off for distribution builds,
 which have no pipewire-dev in their way) it binds the camera nodes with
 pipewire-rs to read their PropInfo into the controls panel and set Props. Build and test:
 
-    flatpak run org.flatpak.Builder --user --install --force-clean target/flatpak/build build-aux/flatpak/io.github.jertlok.Obscura.yml
-    flatpak run org.flatpak.Builder --user --install --force-clean target/flatpak/build-devel build-aux/flatpak/io.github.jertlok.Obscura.Devel.yml
+    flatpak run org.flatpak.Builder --user --install --force-clean target/flatpak/build build-aux/flatpak/io.github.porthole_dev.Obscura.yml
+    flatpak run org.flatpak.Builder --user --install --force-clean target/flatpak/build-devel build-aux/flatpak/io.github.porthole_dev.Obscura.Devel.yml
     build-aux/flatpak/check.sh          # the sandboxed build in the headless session
     build-aux/flatpak/check.sh devel    # the Devel build with libcamera's virtual cameras
 
@@ -39,7 +39,7 @@ real device; the Flathub build is the one to design for.
 ## Manifest outline
 
 ```yaml
-id: io.github.jertlok.Obscura
+id: io.github.porthole_dev.Obscura
 runtime: org.gnome.Platform
 runtime-version: "49"
 sdk: org.gnome.Sdk

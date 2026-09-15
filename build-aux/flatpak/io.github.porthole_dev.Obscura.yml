@@ -1,8 +1,8 @@
 # The sandboxed build, as Flathub would take it: cameras come through the
 # Camera portal and PipeWire (src/pipewire.rs). libcamera is only linked,
 # built with one small pipeline handler and no IPA modules.
-#   flatpak-builder --user --install --force-clean build-aux/flatpak/build build-aux/flatpak/io.github.jertlok.Obscura.yml
-id: io.github.jertlok.Obscura
+#   flatpak-builder --user --install --force-clean build-aux/flatpak/build build-aux/flatpak/io.github.porthole_dev.Obscura.yml
+id: io.github.porthole_dev.Obscura
 runtime: org.gnome.Platform
 runtime-version: "49"
 sdk: org.gnome.Sdk

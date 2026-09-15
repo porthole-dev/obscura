@@ -18,10 +18,10 @@ expect() { # NAME PATTERN SECONDS
 run() { flatpak run --user --no-documents-portal --env=OBSCURA_PERF=1 "$@"; }
 if [ "${1:-}" = devel ]; then
 	# Direct libcamera access, its virtual pipeline allowed for the test.
-	export PREVIEW_COMMAND="flatpak run --user --no-documents-portal --env=OBSCURA_PERF=1 --env=LIBCAMERA_PIPELINES_MATCH_LIST=virtual --env=OBSCURA_SKIP_PORTAL=1 io.github.jertlok.Obscura//devel"
+	export PREVIEW_COMMAND="flatpak run --user --no-documents-portal --env=OBSCURA_PERF=1 --env=LIBCAMERA_PIPELINES_MATCH_LIST=virtual --env=OBSCURA_SKIP_PORTAL=1 io.github.porthole_dev.Obscura//devel"
 	name=devel
 else
-	export PREVIEW_COMMAND="flatpak run --user --no-documents-portal --env=OBSCURA_PERF=1 io.github.jertlok.Obscura//master"
+	export PREVIEW_COMMAND="flatpak run --user --no-documents-portal --env=OBSCURA_PERF=1 io.github.porthole_dev.Obscura//master"
 	name=sandboxed
 fi
 PREVIEW_HOME=$HOME OBSCURA_FAKE= "$P" start 1000 700 >/dev/null || { echo "FAIL  $name did not start (see $log)"; exit 1; }

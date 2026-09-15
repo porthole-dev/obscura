@@ -5,7 +5,7 @@ Comment=Take photos and videos with every control your camera has
 # Translators: search terms, separated by semicolons
 Keywords=camera;photo;picture;video;webcam;raw;dng;manual;exposure;focus;
 Exec=obscura
-Icon=io.github.jertlok.Obscura
+Icon=io.github.porthole_dev.Obscura
 Terminal=false
 Type=Application
 Categories=GNOME;GTK;Graphics;Photography;

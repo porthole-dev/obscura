@@ -15,7 +15,7 @@ mod preview;
 mod video;
 mod viewfinder;
 
-pub const APP_ID: &str = "io.github.jertlok.Obscura";
+pub const APP_ID: &str = "io.github.porthole_dev.Obscura";
 const GETTEXT_PACKAGE: &str = "obscura";
 
 const CSS: &str = "

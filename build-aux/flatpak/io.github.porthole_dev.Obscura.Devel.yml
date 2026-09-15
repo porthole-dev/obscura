@@ -4,8 +4,8 @@
 # which LIBCAMERA_PIPELINES_MATCH_LIST keeps out unless asked for).
 # Not for Flathub: it needs --device=all and network access while building
 # libcamera's libyuv subproject.
-#   flatpak-builder --user --install --force-clean build-aux/flatpak/build-devel build-aux/flatpak/io.github.jertlok.Obscura.Devel.yml
-id: io.github.jertlok.Obscura
+#   flatpak-builder --user --install --force-clean build-aux/flatpak/build-devel build-aux/flatpak/io.github.porthole_dev.Obscura.Devel.yml
+id: io.github.porthole_dev.Obscura
 branch: devel
 runtime: org.gnome.Platform
 runtime-version: "49"

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Copyright 2026 Giuseppe Maggio -->
 <component type="desktop-application">
-  <id>io.github.jertlok.Obscura</id>
+  <id>io.github.porthole_dev.Obscura</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>Obscura</name>
@@ -18,24 +18,24 @@
       <li>Live readout of exposure, sensitivity, colour temperature and focus</li>
     </ul>
   </description>
-  <developer id="io.github.jertlok">
+  <developer id="io.github.porthole_dev">
     <name>Giuseppe Maggio</name>
   </developer>
-  <launchable type="desktop-id">io.github.jertlok.Obscura.desktop</launchable>
-  <url type="homepage">https://github.com/Jertlok/obscura</url>
-  <url type="bugtracker">https://github.com/Jertlok/obscura/issues</url>
+  <launchable type="desktop-id">io.github.porthole_dev.Obscura.desktop</launchable>
+  <url type="homepage">https://github.com/porthole-dev/obscura</url>
+  <url type="bugtracker">https://github.com/porthole-dev/obscura/issues</url>
   <screenshots>
     <screenshot type="default">
       <caption>The viewfinder, with exposure and focus at a glance</caption>
-      <image>https://raw.githubusercontent.com/Jertlok/obscura/main/data/screenshots/photo.png</image>
+      <image>https://raw.githubusercontent.com/porthole-dev/obscura/main/data/screenshots/photo.png</image>
     </screenshot>
     <screenshot>
       <caption>Every control the camera has</caption>
-      <image>https://raw.githubusercontent.com/Jertlok/obscura/main/data/screenshots/controls.png</image>
+      <image>https://raw.githubusercontent.com/porthole-dev/obscura/main/data/screenshots/controls.png</image>
     </screenshot>
     <screenshot>
       <caption>Video, with resolution and frame rate</caption>
-      <image>https://raw.githubusercontent.com/Jertlok/obscura/main/data/screenshots/video.png</image>
+      <image>https://raw.githubusercontent.com/porthole-dev/obscura/main/data/screenshots/video.png</image>
     </screenshot>
   </screenshots>
   <content_rating type="oars-1.1"/>
