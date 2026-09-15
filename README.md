@@ -1,9 +1,7 @@
-> **Unofficial.** Not affiliated with or endorsed by postmarketOS, Google, or
-> Qualcomm. Do not report problems with this port to postmarketOS; open an
-> issue here.
+> **Unofficial.** Not affiliated with or endorsed by postmarketOS, GNOME or
+> libcamera. Do not report problems with this app to them; open an issue here.
 >
-> **Experimental.** Flashing can brick the device or erase data. No warranty,
-> see COPYING.
+> **Experimental.** No warranty, see [COPYING](COPYING).
 >
 > **AI-assisted.** See [AI.md](AI.md).
 
@@ -53,6 +51,13 @@ explains the fake camera and the headless session.
 - Flatpak builds and the camera portal path: [`docs/flatpak.md`](docs/flatpak.md)
 - Cross-building for an aarch64 Alpine or postmarketOS device:
   `build-aux/cross-build.sh` (see its header for the sysroot it expects)
+- On postmarketOS, the package is `testing/obscura` in
+  [porthole-dev/pmaports](https://github.com/porthole-dev/pmaports), built from
+  this repository's release tarballs
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 
