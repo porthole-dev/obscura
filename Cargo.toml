@@ -8,6 +8,9 @@ license = "GPL-3.0-or-later"
 [features]
 # Development only: a fake camera and D-Bus hooks for build-aux/preview.
 preview = []
+# Camera controls through PipeWire nodes, for sandboxed builds: needs
+# libpipewire's headers, so distribution builds leave it off.
+pipewire-controls = ["dep:pipewire"]
 
 [dependencies]
 relm4 = { version = "0.11", features = ["libadwaita", "gnome_49"] }
@@ -22,6 +25,7 @@ env_logger = "0.11"
 anyhow = "1"
 libcamera-sys = "0.7"
 smallvec = "1"
+pipewire = { version = "0.10", optional = true }
 
 
 [profile.release]

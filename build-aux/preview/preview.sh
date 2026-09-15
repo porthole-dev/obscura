@@ -29,7 +29,7 @@ input() { echo "$*" > "$state/input"; }
 case $cmd in
 build)
 	if native; then
-		CARGO_TARGET_DIR=$target cargo build --release --features preview
+		CARGO_TARGET_DIR=$target cargo build --release --features "preview ${PREVIEW_FEATURES:-}"
 	else
 		CARGO_TARGET_DIR=$target "$root/build-aux/cross-build.sh" --features preview
 	fi

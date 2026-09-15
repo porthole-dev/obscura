@@ -43,4 +43,17 @@ modules:
       - type: git
         url: https://git.libcamera.org/libcamera/libcamera.git
         tag: v0.7.2
-  - obscura-module.yml
+  - name: obscura
+    buildsystem: meson
+    config-opts: [-Dcargo_features=pipewire-controls]
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm21/bin
+      env:
+        CARGO_HOME: /run/build/obscura/cargo
+        CARGO_NET_OFFLINE: "true"
+        LIBCLANG_PATH: /usr/lib/sdk/llvm21/lib
+    sources:
+      - type: dir
+        path: ../..
+        skip: [target, .git, .flatpak-builder]
+      - cargo-sources.json

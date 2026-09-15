@@ -53,6 +53,9 @@ pub struct App {
     warmed: bool,
     /// Open the last capture as soon as it is written.
     open_pending: bool,
+    /// Whether the session being opened was asked for video.
+    requested_video: bool,
+    pending_controls: Option<Vec<crate::camera::ControlDesc>>,
     video_mode_label: String,
     /// The camera is switching to its photo mode for a shot: hold the frozen
     /// viewfinder until the photo is taken.
@@ -152,6 +155,7 @@ pub enum Msg {
     Pinch(f64),
     CycleZoom,
     CycleFrameRate,
+    ApplyControls,
     CloseControls,
     ShowInFiles,
     Preferences,
@@ -372,8 +376,13 @@ impl App {
         w.lock_pill.set_visible(false);
         perf!("camera-open-request", "camera={index}");
         if let Some(p) = &self.perf {
-            p.borrow_mut().awaiting = Some(format!("camera={index}"));
+            let mut p = p.borrow_mut();
+            p.awaiting = Some(format!("camera={index}"));
+            // Frames of the old session still waiting to be painted are not
+            // the new one's first.
+            p.set_since_paint = 0;
         }
+        self.requested_video = self.video;
         // A still requested from the closing session may never arrive.
         self.saving = false;
         self.awaiting_still = false;
@@ -1162,6 +1171,8 @@ impl Component for App {
             granted: false,
             warmed: false,
             open_pending: false,
+            requested_video: false,
+            pending_controls: None,
             video_mode_label: String::new(),
             awaiting_still: false,
             last_meta: Metadata::default(),
@@ -1334,6 +1345,22 @@ impl Component for App {
                     self.reopen(w, index, None);
                 }
             }
+            Msg::Camera(Event::Controls(controls)) => {
+                // They come in a burst, one list per control: rebuild once
+                // it settles.
+                let first = self.pending_controls.replace(controls).is_none();
+                if first {
+                    let s = sender.clone();
+                    glib::timeout_add_local_once(Duration::from_millis(200), move || s.input(Msg::ApplyControls));
+                }
+            }
+            Msg::ApplyControls => {
+                if let (Some(controls), Some(session)) = (self.pending_controls.take(), self.session.as_mut()) {
+                    perf!("controls-received", "count={}", controls.len());
+                    session.controls = controls;
+                    self.build_panel(w);
+                }
+            }
             Msg::Camera(Event::Opened(_)) if self.suspended => {
                 if let Some(b) = self.backend() {
                     b.send(Cmd::Close);
@@ -1367,39 +1394,14 @@ impl Component for App {
                 w.resolution.set_tooltip_text(Some(&format!("{} ({})", gettext("Resolution"), mode_label(&session.mode))));
                 w.resolution_action.set_state(&format!("{}x{}", session.mode.width, session.mode.height).to_variant());
 
-                while let Some(child) = w.controls_box.first_child() {
-                    w.controls_box.remove(&child);
-                }
-                self.panel = None;
-                let backend = self.backend.clone();
-                let on_change: controls::OnChange = Rc::new(move |id, value| {
-                    if let Some(b) = backend.as_deref() {
-                        b.send(Cmd::SetControl { id, value });
-                    }
-                });
-                let panel = controls::build(&session.controls, session.fps, &w.capture_group, on_change);
-                w.controls_box.append(&panel.widget);
-                let has = |names: &[&str]| names.iter().any(|n| panel.has(n));
-                let c = &w.chips;
-                c.iso.set_visible(has(&["AnalogueGain", "AeEnable"]));
-                c.shutter.set_visible(has(&["ExposureTime", "AeEnable"]));
-                c.ev.set_visible(has(&["ExposureValue"]));
-                c.wb.set_visible(has(&["AwbMode", "AwbEnable", "ColourTemperature"]));
-                c.focus.set_visible(has(&["AfMode", "LensPosition"]));
-                // Frame rate is a video decision; photos leave it to exposure.
-                c.fps.set_visible(self.video && has(&["FrameDurationLimits"]));
-                if self.video {
-                    // 1080p and below at 60 where the mode allows it, bigger at 30.
-                    let rates = panel.frame_rates();
-                    let want = if session.mode.width <= 2100 { 60.0 } else { 30.0 };
-                    let rate = rates.iter().copied().filter(|r| *r <= want + 0.5).fold(None, |best: Option<f64>, r| Some(best.map_or(r, |b| b.max(r))));
-                    panel.set_frame_rate(rate);
-                    w.resolution.set_label(&video_label(&video_name(&session.mode), panel.frame_rate()));
-                }
-                self.panel = Some(panel);
                 self.remember(&session);
                 self.camera = session.camera;
                 self.session = Some(session);
+                self.build_panel(w);
+                // Photo/video changed while this session was opening.
+                if self.video != self.requested_video {
+                    sender.input(Msg::SetVideo(self.video));
+                }
             }
             Msg::Camera(Event::FrameReady) => {
                 let started = self.perf.is_some().then(Instant::now);
@@ -1826,6 +1828,41 @@ impl Component for App {
 }
 
 impl App {
+    /// (Re)build the controls panel and chips from the session's controls.
+    fn build_panel(&mut self, w: &Widgets) {
+        let Some(session) = self.session.clone() else { return };
+        while let Some(child) = w.controls_box.first_child() {
+            w.controls_box.remove(&child);
+        }
+        self.panel = None;
+        let backend = self.backend.clone();
+        let on_change: controls::OnChange = Rc::new(move |id, value| {
+            if let Some(b) = backend.as_deref() {
+                b.send(Cmd::SetControl { id, value });
+            }
+        });
+        let panel = controls::build(&session.controls, session.fps, &w.capture_group, on_change);
+        w.controls_box.append(&panel.widget);
+        let has = |names: &[&str]| names.iter().any(|n| panel.has(n));
+        let c = &w.chips;
+        c.iso.set_visible(has(&["AnalogueGain", "AeEnable"]));
+        c.shutter.set_visible(has(&["ExposureTime", "AeEnable"]));
+        c.ev.set_visible(has(&["ExposureValue"]));
+        c.wb.set_visible(has(&["AwbMode", "AwbEnable", "ColourTemperature"]));
+        c.focus.set_visible(has(&["AfMode", "LensPosition"]));
+        // Frame rate is a video decision; photos leave it to exposure.
+        c.fps.set_visible(self.video && has(&["FrameDurationLimits"]));
+        if self.video {
+            // 1080p and below at 60 where the mode allows it, bigger at 30.
+            let rates = panel.frame_rates();
+            let want = if session.mode.width <= 2100 { 60.0 } else { 30.0 };
+            let rate = rates.iter().copied().filter(|r| *r <= want + 0.5).fold(None, |best: Option<f64>, r| Some(best.map_or(r, |b| b.max(r))));
+            panel.set_frame_rate(rate);
+            w.resolution.set_label(&video_label(&video_name(&session.mode), panel.frame_rate()));
+        }
+        self.panel = Some(panel);
+    }
+
     fn lock(&mut self, w: &Widgets, x: f64, y: f64) {
         let Some(panel) = self.panel.clone() else { return };
         if w.viewfinder.to_sensor(x, y).is_none() {

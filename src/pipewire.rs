@@ -124,6 +124,8 @@ fn run(remote: Option<OwnedFd>, rx: Receiver<Internal>, slot: Arc<FrameSlot>, em
         rotation: AtomicI32::new(0),
         first: AtomicBool::new(true),
     });
+    #[cfg(feature = "pipewire-controls")]
+    let props = props::spawn(remote.as_ref().and_then(|fd| fd.try_clone().ok()), emit.clone());
     let mut pipeline: Option<gst::Pipeline> = None;
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -139,6 +141,10 @@ fn run(remote: Option<OwnedFd>, rx: Receiver<Internal>, slot: Arc<FrameSlot>, em
                     Ok((p, session)) => {
                         emit(Event::Opened(session));
                         pipeline = Some(p);
+                        #[cfg(feature = "pipewire-controls")]
+                        if let Some(props) = &props {
+                            let _ = props.send(props::Request::Watch(infos[camera].id.clone()));
+                        }
                     }
                     Err(e) => emit(Event::Error(e)),
                 }
@@ -150,9 +156,14 @@ fn run(remote: Option<OwnedFd>, rx: Receiver<Internal>, slot: Arc<FrameSlot>, em
                     let _ = p.set_state(gst::State::Null);
                 }
             }
-            // ponytail: PipeWire's libcamera node publishes controls as
-            // SPA props, which GStreamer's source does not expose; setting
-            // them needs pipewire-rs on the node (docs/flatpak.md).
+            #[cfg(feature = "pipewire-controls")]
+            Internal::Cmd(Cmd::SetControl { id, value }) => {
+                if let Some(props) = &props {
+                    let _ = props.send(props::Request::Set(id, value));
+                }
+            }
+            // Without the pipewire-controls feature the node's controls
+            // stay untouched: GStreamer's source does not expose them.
             Internal::Cmd(_) | Internal::Done(_) | Internal::Returned(..) => {}
         }
     }
@@ -284,5 +295,251 @@ mod tests {
         assert_eq!(orientation_degrees("rotate-270"), Some(270));
         assert_eq!(orientation_degrees("flip-rotate-90"), None);
         assert_eq!(fourcc(gst_video::VideoFormat::Rgbx), Some(u32::from_le_bytes(*b"XB24")));
+    }
+}
+
+/// Camera controls on the PipeWire node: PipeWire's libcamera plugin
+/// publishes the camera's single-value controls as PropInfo params and takes
+/// changes as Props. A second PipeWire connection on its own thread watches
+/// the node the stream uses.
+#[cfg(feature = "pipewire-controls")]
+mod props {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use pipewire as pw;
+    use pw::spa::pod::{ChoiceValue, Object, Pod, Property, Value};
+    use pw::spa::utils::ChoiceEnum;
+
+    use crate::camera::{ControlDesc, Event, Kind};
+
+    pub enum Request {
+        /// Follow the node with this object.serial.
+        Watch(String),
+        Set(u32, Vec<f64>),
+    }
+
+    pub fn spawn(remote: Option<std::os::fd::OwnedFd>, emit: Arc<dyn Fn(Event) + Send + Sync>) -> Option<pw::channel::Sender<Request>> {
+        let (tx, rx) = pw::channel::channel::<Request>();
+        std::thread::Builder::new()
+            .name("pipewire-props".into())
+            .spawn(move || {
+                if let Err(e) = run(remote, rx, emit) {
+                    log::warn!("PipeWire controls: {e}");
+                }
+            })
+            .ok()?;
+        Some(tx)
+    }
+
+    /// A PropInfo param as a control the panel can show.
+    pub fn describe(value: &Value) -> Option<ControlDesc> {
+        let Value::Object(object) = value else { return None };
+        let find = |key: u32| object.properties.iter().find(|p| p.key == key).map(|p| &p.value);
+        let Value::Id(id) = find(pw::spa::sys::SPA_PROP_INFO_id)? else { return None };
+        let Value::String(name) = find(pw::spa::sys::SPA_PROP_INFO_description)? else { return None };
+        let mut enums = Vec::new();
+        if let Some(Value::Struct(labels)) = find(pw::spa::sys::SPA_PROP_INFO_labels) {
+            for pair in labels.chunks(2) {
+                if let [Value::Int(v), Value::String(label)] = pair {
+                    enums.push((*v, label.clone()));
+                }
+            }
+        }
+        let (kind, min, max, def) = match find(pw::spa::sys::SPA_PROP_INFO_type)? {
+            Value::Choice(ChoiceValue::Float(c)) => match &c.1 {
+                ChoiceEnum::Range { default, min, max } => (Kind::Float, *min as f64, *max as f64, *default as f64),
+                ChoiceEnum::None(v) => (Kind::Float, *v as f64, *v as f64, *v as f64),
+                _ => return None,
+            },
+            Value::Choice(ChoiceValue::Int(c)) => match &c.1 {
+                ChoiceEnum::Range { default, min, max } => (Kind::Int, *min as f64, *max as f64, *default as f64),
+                ChoiceEnum::Enum { default, alternatives } => {
+                    let lo = alternatives.iter().copied().min().unwrap_or(*default);
+                    let hi = alternatives.iter().copied().max().unwrap_or(*default);
+                    (Kind::Int, lo as f64, hi as f64, *default as f64)
+                }
+                ChoiceEnum::None(v) => (Kind::Int, *v as f64, *v as f64, *v as f64),
+                _ => return None,
+            },
+            Value::Choice(ChoiceValue::Bool(c)) => match &c.1 {
+                ChoiceEnum::Enum { default, .. } | ChoiceEnum::None(default) => (Kind::Bool, 0.0, 1.0, *default as u8 as f64),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(ControlDesc { id: id.0, name: name.clone(), kind, len: 1, min, max, def: vec![def], enums })
+    }
+
+    /// A Props param setting one control.
+    pub fn props(id: u32, kind: Kind, value: &[f64]) -> Option<Vec<u8>> {
+        let v = *value.first()?;
+        let value = match kind {
+            Kind::Bool => Value::Bool(v != 0.0),
+            Kind::Int => Value::Int(v.round() as i32),
+            Kind::Float => Value::Float(v as f32),
+            Kind::Other => return None,
+        };
+        let object = Object { type_: pw::spa::sys::SPA_TYPE_OBJECT_Props, id: pw::spa::sys::SPA_PARAM_Props, properties: vec![Property::new(id, value)] };
+        pw::spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(object)).ok().map(|(c, _)| c.into_inner())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use pw::spa::pod::deserialize::PodDeserializer;
+        use pw::spa::utils::{Choice, ChoiceFlags, Id};
+
+        fn info(id: u32, name: &str, kind: Value, labels: Option<Vec<Value>>) -> Value {
+            let mut properties = vec![
+                Property::new(pw::spa::sys::SPA_PROP_INFO_id, Value::Id(Id(id))),
+                Property::new(pw::spa::sys::SPA_PROP_INFO_description, Value::String(name.into())),
+                Property::new(pw::spa::sys::SPA_PROP_INFO_type, kind),
+            ];
+            if let Some(l) = labels {
+                properties.push(Property::new(pw::spa::sys::SPA_PROP_INFO_labels, Value::Struct(l)));
+            }
+            Value::Object(Object { type_: pw::spa::sys::SPA_TYPE_OBJECT_PropInfo, id: pw::spa::sys::SPA_PARAM_PropInfo, properties })
+        }
+
+        #[test]
+        fn prop_infos_become_controls() {
+            let exposure = info(
+                0x100_0010,
+                "ExposureTime",
+                Value::Choice(ChoiceValue::Int(Choice(ChoiceFlags::empty(), ChoiceEnum::Range { default: 20000, min: 100, max: 66666 }))),
+                None,
+            );
+            let d = describe(&exposure).unwrap();
+            assert_eq!((d.name.as_str(), d.kind, d.min, d.max, d.def[0]), ("ExposureTime", Kind::Int, 100.0, 66666.0, 20000.0));
+
+            let af = info(
+                0x100_0020,
+                "AfMode",
+                Value::Choice(ChoiceValue::Int(Choice(ChoiceFlags::empty(), ChoiceEnum::Enum { default: 2, alternatives: vec![0, 1, 2] }))),
+                Some(vec![Value::Int(0), Value::String("AfModeManual".into()), Value::Int(2), Value::String("AfModeContinuous".into())]),
+            );
+            let d = describe(&af).unwrap();
+            assert_eq!(d.enums, vec![(0, "AfModeManual".to_string()), (2, "AfModeContinuous".to_string())]);
+            assert_eq!((d.min, d.max, d.def[0]), (0.0, 2.0, 2.0));
+
+            let ae = info(
+                0x100_0030,
+                "AeEnable",
+                Value::Choice(ChoiceValue::Bool(Choice(ChoiceFlags::empty(), ChoiceEnum::Enum { default: true, alternatives: vec![false, true] }))),
+                None,
+            );
+            assert_eq!(describe(&ae).unwrap().kind, Kind::Bool);
+        }
+
+        #[test]
+        fn props_round_trip() {
+            let bytes = props(0x100_0010, Kind::Float, &[0.5]).unwrap();
+            let (_, value) = PodDeserializer::deserialize_any_from(&bytes).unwrap();
+            let Value::Object(o) = value else { panic!() };
+            assert_eq!((o.type_, o.id), (pw::spa::sys::SPA_TYPE_OBJECT_Props, pw::spa::sys::SPA_PARAM_Props));
+            assert_eq!(o.properties[0].key, 0x100_0010);
+            assert_eq!(o.properties[0].value, Value::Float(0.5));
+        }
+    }
+
+    struct Entry {
+        node: pw::node::Node,
+        _listener: pw::node::NodeListener,
+        controls: HashMap<u32, ControlDesc>,
+    }
+
+    #[derive(Default)]
+    struct State {
+        /// The object.serial of the node the stream uses.
+        wanted: Option<String>,
+        /// Every camera node, bound as it appears, so its controls are known
+        /// by the time a stream picks it.
+        nodes: HashMap<String, Entry>,
+    }
+
+    fn run(remote: Option<std::os::fd::OwnedFd>, rx: pw::channel::Receiver<Request>, emit: Arc<dyn Fn(Event) + Send + Sync>) -> Result<(), pw::Error> {
+        pw::init();
+        let mainloop = pw::main_loop::MainLoopRc::new(None)?;
+        let context = pw::context::ContextRc::new(&mainloop, None)?;
+        let core = match remote {
+            Some(fd) => context.connect_fd_rc(fd, None)?,
+            None => context.connect_rc(None)?,
+        };
+        let registry = core.get_registry_rc()?;
+        let state = Rc::new(RefCell::new(State::default()));
+
+        // Every new control announces the watched node's list; the
+        // interface coalesces the burst.
+        let announce = {
+            let emit = emit.clone();
+            Rc::new(move |s: &State| {
+                let Some(entry) = s.wanted.as_ref().and_then(|w| s.nodes.get(w)) else { return };
+                let mut list: Vec<ControlDesc> = entry.controls.values().cloned().collect();
+                list.sort_by(|a, b| a.name.cmp(&b.name));
+                emit(Event::Controls(list));
+            })
+        };
+
+        let _registry_listener = {
+            let (state, registry2, announce) = (state.clone(), registry.clone(), announce.clone());
+            registry
+                .add_listener_local()
+                .global(move |global| {
+                    let props = global.props.as_ref();
+                    if global.type_ != pw::types::ObjectType::Node || props.and_then(|p| p.get("media.class")) != Some("Video/Source") {
+                        return;
+                    }
+                    let Some(serial) = props.and_then(|p| p.get("object.serial")).map(str::to_string) else { return };
+                    let Ok(node) = registry2.bind::<pw::node::Node, _>(global) else { return };
+                    let (state3, announce, key) = (state.clone(), announce.clone(), serial.clone());
+                    let listener = node
+                        .add_listener_local()
+                        .param(move |_, kind, _, _, pod| {
+                            if kind != pw::spa::param::ParamType::PropInfo {
+                                return;
+                            }
+                            let Some(pod) = pod else { return };
+                            let Ok((_, value)) = pw::spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()) else { return };
+                            let Some(desc) = describe(&value) else { return };
+                            let mut s = state3.borrow_mut();
+                            if let Some(entry) = s.nodes.get_mut(&key) {
+                                entry.controls.insert(desc.id, desc);
+                            }
+                            if s.wanted.as_deref() == Some(key.as_str()) {
+                                announce(&s);
+                            }
+                        })
+                        .register();
+                    node.subscribe_params(&[pw::spa::param::ParamType::PropInfo]);
+                    state.borrow_mut().nodes.insert(serial, Entry { node, _listener: listener, controls: HashMap::new() });
+                })
+                .register()
+        };
+
+        let _receiver = {
+            let (state, announce) = (state.clone(), announce.clone());
+            rx.attach(mainloop.loop_(), move |request| match request {
+                Request::Watch(serial) => {
+                    state.borrow_mut().wanted = Some(serial);
+                    announce(&state.borrow());
+                }
+                Request::Set(id, value) => {
+                    let s = state.borrow();
+                    if let Some(entry) = s.wanted.as_ref().and_then(|w| s.nodes.get(w))
+                        && let Some(desc) = entry.controls.get(&id)
+                        && let Some(bytes) = props(id, desc.kind, &value)
+                        && let Some(pod) = Pod::from_bytes(&bytes)
+                    {
+                        entry.node.set_param(pw::spa::param::ParamType::Props, 0, pod);
+                        perf!("control", "{}={value:?}", desc.name);
+                    }
+                }
+            })
+        };
+        mainloop.run();
+        Ok(())
     }
 }

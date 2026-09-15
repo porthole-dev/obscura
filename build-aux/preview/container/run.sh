@@ -19,4 +19,4 @@ podman build -q -t "$image" "$context" >/dev/null
 exec podman run --rm --security-opt label=disable \
 	$( [ -e /dev/udmabuf ] && echo --device /dev/udmabuf ) \
 	-v "$root:/src" -v obscura-preview-cargo:/cargo \
-	-e PREVIEW_TARGET_DIR=/src/target/container "$image" "$@"
+	-e PREVIEW_TARGET_DIR=/src/target/container -e PREVIEW_FEATURES=pipewire-controls "$image" "$@"

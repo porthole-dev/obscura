@@ -201,6 +201,10 @@ pub enum Event {
     Opened(Session),
     /// A new viewfinder frame is waiting in the backend's slot.
     FrameReady,
+    /// The session's controls became known, or changed (PipeWire sends
+    /// them after the stream opens).
+    #[cfg_attr(not(feature = "pipewire-controls"), allow(dead_code))]
+    Controls(Vec<ControlDesc>),
     Metadata(Metadata),
     Still(Box<Still>),
     Error(String),

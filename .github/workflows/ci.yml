@@ -13,8 +13,8 @@ jobs:
     steps:
       - name: Dependencies
         run: |
-          apk add --no-cache bash git build-base cargo rustfmt cargo-clippy clang-libclang pkgconf \
-            gtk4.0-dev libadwaita-dev libcamera-dev gstreamer-dev gst-plugins-base-dev \
+          apk add --no-cache bash git build-base cargo rustfmt rust-clippy clang-libclang pkgconf \
+            gtk4.0-dev libadwaita-dev libcamera-dev pipewire-dev gstreamer-dev gst-plugins-base-dev \
             gst-plugins-good gst-plugins-bad gst-plugins-ugly \
             mutter dbus at-spi2-core py3-atspi py3-gobject3 adwaita-icon-theme \
             font-dejavu font-cantarell mesa-dri-gallium glib-dev appstream desktop-file-utils gettext
@@ -25,9 +25,9 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --release --locked -- -D warnings
-          cargo clippy --release --locked --features preview -- -D warnings
+          cargo clippy --release --locked --features "preview pipewire-controls" -- -D warnings
       - name: Unit tests
-        run: cargo test --release --locked
+        run: cargo test --release --locked --features pipewire-controls
       - name: UI checks (fake camera, headless mutter)
         env:
           XDG_RUNTIME_DIR: /tmp/xdg

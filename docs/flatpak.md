@@ -1,8 +1,10 @@
 # Flatpak and Flathub: design note
 
-Status: the PipeWire backend (`src/pipewire.rs`, built on GStreamer's
-PipeWire elements rather than pipewire-rs) and two manifests exist; node
-controls through PipeWire do not yet. Build and test:
+Status: implemented. The PipeWire backend (`src/pipewire.rs`) streams
+through GStreamer's PipeWire elements, and with the `pipewire-controls`
+cargo feature (on in the sandboxed manifest, off for distribution builds,
+which have no pipewire-dev in their way) it binds the camera nodes with
+pipewire-rs to read their PropInfo into the controls panel and set Props. Build and test:
 
     flatpak run org.flatpak.Builder --user --install --force-clean target/flatpak/build build-aux/flatpak/io.github.jertlok.Obscura.yml
     flatpak run org.flatpak.Builder --user --install --force-clean target/flatpak/build-devel build-aux/flatpak/io.github.jertlok.Obscura.Devel.yml

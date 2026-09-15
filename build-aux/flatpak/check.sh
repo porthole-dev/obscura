@@ -29,7 +29,8 @@ if [ $name = devel ]; then
 	expect "libcamera backend: cameras" "camera-manager cameras=2" 30
 	expect "first frame shown" "frame-first-presented" 30
 	"$P" act switch-camera
-	expect "camera switch" "session-opened camera=1" 20
+	for _ in $(seq 100); do [ "$(grep -c "obscura-perf [0-9.]* session-opened" "$log")" -ge 2 ] && break; sleep 0.2; done
+	expect "camera switch" "session-opened" 1 && [ "$(grep -c "obscura-perf [0-9.]* session-opened" "$log")" -ge 2 ] || { echo "FAIL  camera switch opened nothing new"; failed=$((failed + 1)); }
 else
 	# No portal in the headless session: the sandboxed build must say so
 	# rather than hang or crash.

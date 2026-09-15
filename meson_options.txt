@@ -1,0 +1,2 @@
+option('cargo_features', type: 'string', value: '',
+  description: 'Cargo features to enable, e.g. pipewire-controls for sandboxed builds')

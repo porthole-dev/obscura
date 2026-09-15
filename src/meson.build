@@ -6,6 +6,9 @@ cargo_build = cargo_auditable.found() ? [cargo, 'auditable', 'build'] : [cargo, 
 cargo_env = environment()
 cargo_env.set('LOCALEDIR', localedir)
 
+features = get_option('cargo_features')
+cargo_features = features == '' ? [] : ['--features', features]
+
 target_dir = meson.project_build_root() / 'target'
 # A cross build names its target through CARGO_BUILD_TARGET (cargo's own
 # variable), and cargo then writes to target/<triple>/release rather than
@@ -24,7 +27,7 @@ custom_target(
   install_dir: bindir,
   env: cargo_env,
   command: [
-    cargo_build, '--release', '--locked',
+    cargo_build, '--release', '--locked', cargo_features,
     '--manifest-path', meson.project_source_root() / 'Cargo.toml',
     '--target-dir', target_dir,
     '&&',
