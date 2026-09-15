@@ -1,11 +1,41 @@
+# Lint, test, build, and check commit trailers on every push and pull request.
 name: CI
 
 on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_DEPENDENCIES: >-
+    bash git build-base cargo clang-libclang pkgconf glib-dev gtk4.0-dev
+    libadwaita-dev libcamera-dev pipewire-dev gstreamer-dev gst-plugins-base-dev
+
 jobs:
-  check:
+  lint:
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/alpine:edge
+      options: --security-opt seccomp=unconfined
+    steps:
+      - run: apk add --no-cache $RUST_DEPENDENCIES rustfmt rust-clippy
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: |
+          cargo clippy --release --locked -- -D warnings
+          cargo clippy --release --locked --features "preview pipewire-controls" -- -D warnings
+
+  test:
     runs-on: ubuntu-latest
     container:
       image: docker.io/library/alpine:edge
@@ -13,19 +43,14 @@ jobs:
     steps:
       - name: Dependencies
         run: |
-          apk add --no-cache bash git build-base cargo rustfmt rust-clippy clang-libclang pkgconf \
-            gtk4.0-dev libadwaita-dev libcamera-dev pipewire-dev gstreamer-dev gst-plugins-base-dev \
+          apk add --no-cache $RUST_DEPENDENCIES \
             gst-plugins-good gst-plugins-bad gst-plugins-ugly \
             mutter dbus at-spi2-core py3-atspi py3-gobject3 adwaita-icon-theme \
-            font-dejavu font-cantarell mesa-dri-gallium glib-dev appstream desktop-file-utils gettext
+            font-dejavu font-cantarell mesa-dri-gallium appstream desktop-file-utils gettext
           mkdir -m 700 -p /tmp/xdg
-      - uses: actions/checkout@v4
-      - name: Format
-        run: cargo fmt --check
-      - name: Clippy
-        run: |
-          cargo clippy --release --locked -- -D warnings
-          cargo clippy --release --locked --features "preview pipewire-controls" -- -D warnings
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Unit tests
         run: cargo test --release --locked --features pipewire-controls
       - name: UI checks (fake camera, headless mutter)
@@ -38,3 +63,34 @@ jobs:
         with:
           name: preview-check
           path: target/preview/check/
+
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/alpine:edge
+      options: --security-opt seccomp=unconfined
+    steps:
+      - run: apk add --no-cache $RUST_DEPENDENCIES meson appstream desktop-file-utils gettext-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: meson setup _build
+      - run: meson compile -C _build
+      - run: DESTDIR="$PWD/_install" meson install -C _build --no-rebuild
+
+  commit-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 100
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Test the check
+        run: sh .github/scripts/test-commit-check.sh
+      - name: Check trailers and DCO sign-off
+        run: |
+          base=$(sh .github/scripts/base-commit.sh)
+          if [ -z "$base" ]; then echo "no new commits"; exit 0; fi
+          sh .github/scripts/commit-check.sh "$base" HEAD \
+            ${{ github.event_name == 'pull_request' && '--dco' || '' }}
