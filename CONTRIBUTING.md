@@ -30,7 +30,7 @@ build-aux/preview/check.sh          # UI checks against a fake camera, headless
 ```
 
 CI runs these and a meson build (`.github/workflows/ci.yml`), plus the
-trailer and sign-off check in `.github/scripts/commit-check.sh`.
+organization's commit check (trailers and sign-off, `porthole-dev/.github`).
 
 ## Releases
 

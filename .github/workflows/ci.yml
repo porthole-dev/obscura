@@ -1,37 +1,58 @@
-# Lint, test, build, and check commit trailers on pushes to main and on every
-# pull request. Tags run the release workflow instead, and a branch is checked
-# by its pull request.
+# Lint, test, build, and check commits on pushes to main, pull requests and
+# merge groups, and weekly against the moving alpine:edge image. Tags run the
+# release workflow instead, and a branch is checked by its pull request.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Superseded pull request runs are cancelled; every push to main keeps its result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # GNU tar and zstd: actions/cache (under rust-cache) cannot save with
+  # busybox tar, and only warns when it fails.
   RUST_DEPENDENCIES: >-
     bash git build-base cargo clang-libclang pkgconf glib-dev gtk4.0-dev
     libadwaita-dev libcamera-dev pipewire-dev gstreamer-dev gst-plugins-base-dev
+    tar zstd
+  # Compiled dependencies are cached per job, keyed by Cargo.lock and the
+  # compiler (Swatinem/rust-cache). Only main saves: pull requests restore
+  # main's cache and cannot fill the repository's 10 GB with their own.
+  SAVE_CACHE: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The distribution the app ships to, deliberately unpinned; the weekly
+    # run catches breakage it brings.
     container:
-      image: docker.io/library/alpine:edge
+      image: docker.io/library/alpine:edge # zizmor: ignore[unpinned-images]
       options: --security-opt seccomp=unconfined
     steps:
-      - run: apk add --no-cache $RUST_DEPENDENCIES rustfmt rust-clippy
+      - name: Dependencies
+        run: |
+          # shellcheck disable=SC2086 # a list of packages
+          apk add --no-cache $RUST_DEPENDENCIES rustfmt rust-clippy
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ env.SAVE_CACHE }}
       - name: Format
         run: cargo fmt --check
       - name: Clippy
@@ -42,20 +63,36 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     container:
-      image: docker.io/library/alpine:edge
+      image: docker.io/library/alpine:edge # zizmor: ignore[unpinned-images]
       options: --security-opt seccomp=unconfined
+    env:
+      # Tests and the UI checks exercise the code, not the shipped
+      # optimization: without fat LTO and one codegen unit, each release build
+      # here took over six minutes of the job's fourteen. The Build job keeps
+      # the shipped profile.
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      # The unit tests and the preview build share one target directory,
+      # so the dependencies are compiled once.
+      CARGO_TARGET_DIR: target/preview
     steps:
       - name: Dependencies
         run: |
+          # shellcheck disable=SC2086 # a list of packages
           apk add --no-cache $RUST_DEPENDENCIES \
             gst-plugins-good gst-plugins-bad gst-plugins-ugly \
             mutter dbus at-spi2-core py3-atspi py3-gobject3 adwaita-icon-theme \
             font-dejavu font-cantarell mesa-dri-gallium appstream desktop-file-utils gettext
-          mkdir -m 700 -p /tmp/xdg
+          mkdir -m 700 /tmp/xdg
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target/preview"
+          save-if: ${{ env.SAVE_CACHE }}
       - name: Unit tests
         run: cargo test --release --locked --features pipewire-controls
       - name: UI checks (fake camera, headless mutter)
@@ -68,18 +105,27 @@ jobs:
         with:
           name: preview-check
           path: target/preview/check/
+          if-no-files-found: error
 
   build:
     name: Build
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
-      image: docker.io/library/alpine:edge
+      image: docker.io/library/alpine:edge # zizmor: ignore[unpinned-images]
       options: --security-opt seccomp=unconfined
     steps:
-      - run: apk add --no-cache $RUST_DEPENDENCIES meson appstream desktop-file-utils gettext-dev
+      - name: Dependencies
+        run: |
+          # shellcheck disable=SC2086 # a list of packages
+          apk add --no-cache $RUST_DEPENDENCIES meson appstream desktop-file-utils gettext-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> _build/target"
+          save-if: ${{ env.SAVE_CACHE }}
       - run: meson setup _build
       - run: meson compile -C _build
       - run: DESTDIR="$PWD/_install" meson install -C _build --no-rebuild
@@ -87,17 +133,27 @@ jobs:
   commit-check:
     name: Commit check
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: porthole-dev/.github/actions/commit-check@2d4d1186816e5bc3997e08b490f464082f70e85f # main
+
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 100
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Test the check
-        run: sh .github/scripts/test-commit-check.sh
-      - name: Check trailers and DCO sign-off
-        run: |
-          base=$(sh .github/scripts/base-commit.sh)
-          if [ -z "$base" ]; then echo "no new commits"; exit 0; fi
-          sh .github/scripts/commit-check.sh "$base" HEAD \
-            ${{ github.event_name == 'pull_request' && '--dco' || '' }}
+      - uses: porthole-dev/.github/actions/workflow-lint@2d4d1186816e5bc3997e08b490f464082f70e85f # main
+
+  ci-passed:
+    name: CI passed
+    if: ${{ !cancelled() }}
+    needs: [lint, test, build, commit-check, workflow-lint]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: porthole-dev/.github/actions/ci-passed@2d4d1186816e5bc3997e08b490f464082f70e85f # main
+        with:
+          results: ${{ join(needs.*.result, ' ') }}
