@@ -12,7 +12,8 @@ set -eu
 event=$GITHUB_EVENT_PATH
 case "$GITHUB_EVENT_NAME" in
 pull_request)
-	jq -r .pull_request.base.sha "$event" ;;
+	jq -r .pull_request.base.sha "$event"
+	;;
 push)
 	before=$(jq -r .before "$event")
 	if git merge-base --is-ancestor "$before" HEAD 2>/dev/null; then
@@ -22,5 +23,6 @@ push)
 		# A root commit (the first push to a new repository) has no parent:
 		# print nothing, so there is no range to check.
 		if [ -n "$first" ]; then git rev-parse -q --verify "$first^" || true; fi
-	fi ;;
+	fi
+	;;
 esac
