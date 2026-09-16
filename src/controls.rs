@@ -510,6 +510,104 @@ impl Panel {
             row.grab_focus();
         }
     }
+
+    /// A compact strip for the controls one chip governs, to sit over the
+    /// viewfinder instead of opening the whole sheet.
+    ///
+    /// It owns no state. Sliders share the very same `gtk::Adjustment` as the
+    /// sheet's row, so moving either moves both and the row's existing change
+    /// handler still fires; switches and modes drive the sheet's widgets
+    /// directly. Nothing here can drift out of step with the panel, because
+    /// there is nothing here to drift.
+    ///
+    /// None when the camera has none of these controls, so a chip with
+    /// nothing behind it opens nothing.
+    pub fn quick(&self, names: &[&str]) -> Option<gtk::Box> {
+        let strip = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .css_classes(["quick"])
+            .width_request(280)
+            .build();
+
+        for name in names {
+            let Some(row) = self.rows.get(*name) else { continue };
+            let title = known(name).0;
+
+            if let Some(combo) = row.downcast_ref::<adw::ComboRow>() {
+                strip.append(&quick_modes(&title, combo));
+            } else if let Some(sw) = row.downcast_ref::<adw::SwitchRow>() {
+                let t = gtk::ToggleButton::builder().label(&title).build();
+                t.set_active(sw.is_active());
+                let sw = sw.clone();
+                t.connect_toggled(move |b| sw.set_active(b.is_active()));
+                strip.append(&t);
+            } else if let Some(scale) = first_scale(row) {
+                strip.append(&quick_slider(&title, &scale));
+            }
+        }
+
+        strip.first_child().is_some().then_some(strip)
+    }
+}
+
+/// The first gtk::Scale anywhere under `w`.
+fn first_scale(w: &gtk::Widget) -> Option<gtk::Scale> {
+    if let Some(s) = w.downcast_ref::<gtk::Scale>() {
+        return Some(s.clone());
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(found) = first_scale(&c) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// A labelled slider sharing the sheet row's adjustment.
+fn quick_slider(title: &str, sheet: &gtk::Scale) -> gtk::Box {
+    let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    b.append(&gtk::Label::builder().label(title).xalign(0.0).css_classes(["caption", "dim-label"]).build());
+    let scale = gtk::Scale::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .adjustment(&sheet.adjustment())
+        .hexpand(true)
+        .draw_value(false)
+        .build();
+    scale.update_property(&[gtk::accessible::Property::Label(title)]);
+    b.append(&scale);
+    b
+}
+
+/// An enum control as a row of linked toggles, driving the sheet's combo.
+fn quick_modes(title: &str, combo: &adw::ComboRow) -> gtk::Box {
+    let b = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    b.append(&gtk::Label::builder().label(title).xalign(0.0).css_classes(["caption", "dim-label"]).build());
+
+    let row = gtk::Box::builder().spacing(0).homogeneous(true).css_classes(["linked"]).build();
+    let model = combo.model().and_downcast::<gtk::StringList>();
+    let n = model.as_ref().map_or(0, |m| m.n_items());
+    let mut first: Option<gtk::ToggleButton> = None;
+    for i in 0..n {
+        let text = model.as_ref().and_then(|m| m.string(i)).unwrap_or_default();
+        let t = gtk::ToggleButton::builder().label(text.as_str()).build();
+        match &first {
+            Some(f) => t.set_group(Some(f)),
+            None => first = Some(t.clone()),
+        }
+        t.set_active(combo.selected() == i);
+        let combo = combo.clone();
+        t.connect_toggled(move |b| {
+            if b.is_active() && combo.selected() != i {
+                combo.set_selected(i);
+            }
+        });
+        row.append(&t);
+    }
+    b.append(&row);
+    b
 }
 
 #[cfg(test)]

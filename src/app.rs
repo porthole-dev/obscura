@@ -191,6 +191,22 @@ pub struct Chips {
     zoom: gtk::Button,
 }
 
+impl Chips {
+    /// The chip that governs `names`, to anchor its quick controls under.
+    /// Keyed on the first control because that is what each chip leads its
+    /// list with, and no two chips lead with the same one.
+    fn for_controls(&self, names: &[&str]) -> Option<&gtk::Button> {
+        match *names.first()? {
+            "AnalogueGainMode" => Some(&self.iso),
+            "ExposureTimeMode" => Some(&self.shutter),
+            "ExposureValue" => Some(&self.ev),
+            "AwbMode" => Some(&self.wb),
+            "AfMode" => Some(&self.focus),
+            _ => None,
+        }
+    }
+}
+
 pub struct Widgets {
     window: adw::ApplicationWindow,
     toasts: adw::ToastOverlay,
@@ -1298,10 +1314,33 @@ impl Component for App {
             Msg::CloseControls => w.controls_toggle.set_active(false),
             Msg::ToggleControls => w.controls_toggle.set_active(!w.controls_toggle.is_active()),
             Msg::ShowControl(names) => {
-                w.controls_toggle.set_active(true);
-                if let Some(panel) = self.panel.clone() {
-                    // Once the sheet or sidebar has mapped the rows.
-                    glib::timeout_add_local_once(Duration::from_millis(250), move || panel.focus(names));
+                // A chip opens just what that chip governs, over the
+                // viewfinder. The whole sheet is still a tap away on the
+                // header, but reaching ISO should not cost you the picture.
+                // Msg crosses a thread boundary, so it cannot carry a
+                // widget; the chip is found from the controls it governs.
+                let chip = w.chips.for_controls(names);
+                match chip.and_then(|_| self.panel.as_ref().and_then(|p| p.quick(names))) {
+                    Some(strip) => {
+                        let chip = chip.expect("checked just above");
+                        let pop = gtk::Popover::builder()
+                            .child(&strip)
+                            .autohide(true)
+                            .has_arrow(true)
+                            .position(gtk::PositionType::Top)
+                            .build();
+                        pop.set_parent(chip);
+                        // A popover outlives its parent unless it is told not to.
+                        pop.connect_closed(|p| p.unparent());
+                        pop.popup();
+                    }
+                    // Nothing compact to show: fall back to the full sheet.
+                    None => {
+                        w.controls_toggle.set_active(true);
+                        if let Some(panel) = self.panel.clone() {
+                            glib::timeout_add_local_once(Duration::from_millis(250), move || panel.focus(names));
+                        }
+                    }
                 }
             }
             Msg::PortalSlow => {
