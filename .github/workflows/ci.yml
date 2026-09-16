@@ -135,7 +135,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: porthole-dev/.github/actions/commit-check@2d4d1186816e5bc3997e08b490f464082f70e85f # main
+      - uses: porthole-dev/.github/actions/commit-check@06b66d018629f11ebf2e305940855793dbc0b775 # v1.0.0
 
   workflow-lint:
     name: Workflow lint
@@ -145,7 +145,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: porthole-dev/.github/actions/workflow-lint@2d4d1186816e5bc3997e08b490f464082f70e85f # main
+      - uses: porthole-dev/.github/actions/workflow-lint@06b66d018629f11ebf2e305940855793dbc0b775 # v1.0.0
 
   ci-passed:
     name: CI passed
@@ -154,6 +154,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: porthole-dev/.github/actions/ci-passed@2d4d1186816e5bc3997e08b490f464082f70e85f # main
+      - uses: porthole-dev/.github/actions/ci-passed@06b66d018629f11ebf2e305940855793dbc0b775 # v1.0.0
         with:
           results: ${{ join(needs.*.result, ' ') }}
