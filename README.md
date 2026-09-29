@@ -1,10 +1,3 @@
-> **Unofficial.** Not affiliated with or endorsed by postmarketOS, GNOME or
-> libcamera. Do not report problems with this app to them; open an issue here.
->
-> **Experimental.** No warranty, see [COPYING](COPYING).
->
-> **AI-assisted.** See [AI.md](AI.md).
-
 # Obscura
 
 A camera app for phones and computers that talks to libcamera directly, so it
@@ -49,9 +42,9 @@ These are the steps `.github/workflows/ci.yml` runs. `build-aux/preview/`
 explains the fake camera and the headless session.
 
 - Flatpak builds and the camera portal path: [`docs/flatpak.md`](docs/flatpak.md)
-- Cross-building for an aarch64 Alpine or postmarketOS device:
+- Cross-building for an aarch64 Alpine or Nura device:
   `build-aux/cross-build.sh` (see its header for the sysroot it expects)
-- On postmarketOS, the package is `testing/obscura` in
+- On Nura, the package is `testing/obscura` in
   [porthole-dev/pmaports](https://github.com/porthole-dev/pmaports), built from
   this repository's release tarballs
 
@@ -63,3 +56,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 GPL-3.0-or-later, see [`COPYING`](COPYING). Provided as is, without warranty of
 any kind.
+
+## Project links
+
+[Device support](https://github.com/porthole-dev/porthole) ·
+[Packaged builds](https://github.com/porthole-dev/pmos-packages) ·
+[Contribution policy](https://github.com/porthole-dev/.github/blob/main/CONTRIBUTING.md)
+
+Independent project; not endorsed by Nura, GNOME or libcamera. See
+[AI.md](AI.md) for the assistance policy.

@@ -7,6 +7,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   merge_group:
   schedule:
     - cron: "41 4 * * 1"
@@ -135,7 +136,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: porthole-dev/.github/actions/commit-check@b4f7bd46f772860e6f825139e2cff7d3b25d898c # v1.0.1
+      - uses: porthole-dev/.github/actions/commit-check@efe4230d0271f39f3fdf105cb905165340512b9e # shared release automation
 
   workflow-lint:
     name: Workflow lint
@@ -145,7 +146,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: porthole-dev/.github/actions/workflow-lint@b4f7bd46f772860e6f825139e2cff7d3b25d898c # v1.0.1
+      - uses: porthole-dev/.github/actions/workflow-lint@efe4230d0271f39f3fdf105cb905165340512b9e # shared release automation
 
   ci-passed:
     name: CI passed
@@ -154,6 +155,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: porthole-dev/.github/actions/ci-passed@b4f7bd46f772860e6f825139e2cff7d3b25d898c # v1.0.1
+      - uses: porthole-dev/.github/actions/ci-passed@efe4230d0271f39f3fdf105cb905165340512b9e # shared release automation
         with:
           results: ${{ join(needs.*.result, ' ') }}
