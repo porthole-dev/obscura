@@ -1,5 +1,7 @@
 # Obscura
 
+[Website](https://porthole-dev.github.io/porthole/) · [Downloads](https://porthole-dev.github.io/porthole/downloads/) · [Device support](https://porthole-dev.github.io/porthole/devices/)
+
 A camera app for phones and computers that talks to libcamera directly, so it
 can offer whatever the camera itself can do. GTK 4 and libadwaita, written in
 Rust.
