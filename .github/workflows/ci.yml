@@ -24,7 +24,9 @@ jobs:
       image: docker.io/library/alpine:edge
       options: --security-opt seccomp=unconfined
     steps:
-      - run: apk add --no-cache $RUST_DEPENDENCIES rustfmt rust-clippy
+      - run: |
+          # shellcheck disable=SC2086 # intentional package list
+          apk add --no-cache $RUST_DEPENDENCIES rustfmt rust-clippy
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -43,11 +45,13 @@ jobs:
     steps:
       - name: Dependencies
         run: |
+          # shellcheck disable=SC2086 # intentional package list
           apk add --no-cache $RUST_DEPENDENCIES \
             gst-plugins-good gst-plugins-bad gst-plugins-ugly \
             mutter dbus at-spi2-core py3-atspi py3-gobject3 adwaita-icon-theme \
             font-dejavu font-cantarell mesa-dri-gallium appstream desktop-file-utils gettext
-          mkdir -m 700 -p /tmp/xdg
+          mkdir -p /tmp/xdg
+          chmod 700 /tmp/xdg
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -70,7 +74,9 @@ jobs:
       image: docker.io/library/alpine:edge
       options: --security-opt seccomp=unconfined
     steps:
-      - run: apk add --no-cache $RUST_DEPENDENCIES meson appstream desktop-file-utils gettext-dev
+      - run: |
+          # shellcheck disable=SC2086 # intentional package list
+          apk add --no-cache $RUST_DEPENDENCIES meson appstream desktop-file-utils gettext-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -80,17 +86,6 @@ jobs:
 
   commit-check:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 100
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - name: Test the check
-        run: sh .github/scripts/test-commit-check.sh
-      - name: Check trailers and DCO sign-off
-        run: |
-          base=$(sh .github/scripts/base-commit.sh)
-          if [ -z "$base" ]; then echo "no new commits"; exit 0; fi
-          sh .github/scripts/commit-check.sh "$base" HEAD \
-            ${{ github.event_name == 'pull_request' && '--dco' || '' }}
+      - uses: porthole-dev/.github/actions/commit-check@3bc877e480b528778a6522e396a04f6b2b86884d

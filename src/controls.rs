@@ -523,12 +523,7 @@ impl Panel {
     /// None when the camera has none of these controls, so a chip with
     /// nothing behind it opens nothing.
     pub fn quick(&self, names: &[&str]) -> Option<gtk::Box> {
-        let strip = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .css_classes(["quick"])
-            .width_request(280)
-            .build();
+        let strip = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).css_classes(["quick"]).width_request(280).build();
 
         for name in names {
             let Some(row) = self.rows.get(*name) else { continue };
@@ -570,12 +565,7 @@ fn first_scale(w: &gtk::Widget) -> Option<gtk::Scale> {
 fn quick_slider(title: &str, sheet: &gtk::Scale) -> gtk::Box {
     let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
     b.append(&gtk::Label::builder().label(title).xalign(0.0).css_classes(["caption", "dim-label"]).build());
-    let scale = gtk::Scale::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .adjustment(&sheet.adjustment())
-        .hexpand(true)
-        .draw_value(false)
-        .build();
+    let scale = gtk::Scale::builder().orientation(gtk::Orientation::Horizontal).adjustment(&sheet.adjustment()).hexpand(true).draw_value(false).build();
     scale.update_property(&[gtk::accessible::Property::Label(title)]);
     b.append(&scale);
     b

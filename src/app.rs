@@ -1323,12 +1323,7 @@ impl Component for App {
                 match chip.and_then(|_| self.panel.as_ref().and_then(|p| p.quick(names))) {
                     Some(strip) => {
                         let chip = chip.expect("checked just above");
-                        let pop = gtk::Popover::builder()
-                            .child(&strip)
-                            .autohide(true)
-                            .has_arrow(true)
-                            .position(gtk::PositionType::Top)
-                            .build();
+                        let pop = gtk::Popover::builder().child(&strip).autohide(true).has_arrow(true).position(gtk::PositionType::Top).build();
                         pop.set_parent(chip);
                         // A popover outlives its parent unless it is told not to.
                         pop.connect_closed(|p| p.unparent());
