@@ -45,7 +45,13 @@ pub fn encoder() -> Option<&'static Encoder> {
     *PICK.get_or_init(|| {
         gst();
         let pick = CANDIDATES.iter().find(|e| {
-            if gst::ElementFactory::find(e.element).is_none() {
+            let Some(factory) = gst::ElementFactory::find(e.element) else {
+                return false;
+            };
+            // Respect the standard GStreamer disable override, including
+            // GST_PLUGIN_FEATURE_RANK=encoder-name:0 on broken hardware.
+            if factory.rank() == gst::Rank::NONE {
+                log::info!("video encoder {}: disabled by factory rank", e.element);
                 return false;
             }
             let ok = probe(e);
