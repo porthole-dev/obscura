@@ -892,13 +892,10 @@ fn sensor_modes(cam: &ActiveCamera) -> Vec<Mode> {
                 }
             }
         }
-        if matches!(role, StreamRole::ViewFinder) {
-            modes.retain(|m| configures_as(cam, *m));
-        }
-        if !modes.is_empty() {
-            break;
-        }
     }
+    // RAW sensor modes need not be valid processed-image sizes. Include the
+    // processed stream's smaller modes too, then validate the complete list.
+    modes.retain(|m| configures_as(cam, *m));
     modes.sort_by_key(|m| std::cmp::Reverse(m.width as u64 * m.height as u64));
     modes
 }
