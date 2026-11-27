@@ -66,6 +66,11 @@ impl Orientation {
                     return;
                 }
                 let read = move |p: &gio::DBusProxy| p.cached_property("AccelerometerOrientation").and_then(|v| v.get::<String>()).as_deref().and_then(degrees);
+                // The compositor may already have the accelerometer claimed.
+                // Report its cached orientation before waiting for changes.
+                if let Some(d) = read(&proxy) {
+                    changed(d);
+                }
                 proxy.connect_local("g-properties-changed", false, move |args| {
                     if let Some(d) = args.first().and_then(|a| a.get::<gio::DBusProxy>().ok()).and_then(|p| read(&p)) {
                         changed(d);

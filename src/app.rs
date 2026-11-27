@@ -69,6 +69,7 @@ pub struct App {
     device: i32,
     natural_landscape: Option<bool>,
     display_rotation: i32,
+    orientation_known: bool,
     zoom: f64,
     zoom_start: f64,
     orientation: crate::device::Orientation,
@@ -1181,6 +1182,7 @@ impl Component for App {
             device: 0,
             natural_landscape: None,
             display_rotation: 0,
+            orientation_known: false,
             zoom: 1.0,
             zoom_start: 1.0,
             orientation: crate::device::Orientation::watch({
@@ -1652,6 +1654,7 @@ impl Component for App {
                 }
             }
             Msg::Orientation(d) => {
+                self.orientation_known = true;
                 self.device = d;
                 self.apply_orientation(w);
             }
@@ -1953,6 +1956,9 @@ impl App {
     /// Turn the viewfinder for the display: when the compositor has rotated
     /// the screen to follow the device, the picture must turn with it.
     fn apply_orientation(&mut self, w: &Widgets) {
+        if !self.orientation_known {
+            return;
+        }
         let monitor = w.window.surface().and_then(|s| WidgetExt::display(&w.window).monitor_at_surface(&s));
         let Some(geometry) = monitor.map(|m| m.geometry()) else { return };
         let landscape = geometry.width() > geometry.height();

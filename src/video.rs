@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use gst::prelude::*;
@@ -44,7 +45,13 @@ pub fn encoder() -> Option<&'static Encoder> {
     *PICK.get_or_init(|| {
         gst();
         let pick = CANDIDATES.iter().find(|e| {
-            if gst::ElementFactory::find(e.element).is_none() {
+            let Some(factory) = gst::ElementFactory::find(e.element) else {
+                return false;
+            };
+            // Respect the standard GStreamer disable override, including
+            // GST_PLUGIN_FEATURE_RANK=encoder-name:0 on broken hardware.
+            if factory.rank() == gst::Rank::NONE {
+                log::info!("video encoder {}: disabled by factory rank", e.element);
                 return false;
             }
             let ok = probe(e);
@@ -139,6 +146,7 @@ pub struct Recorder {
     width: u32,
     height: u32,
     format: gst_video::VideoFormat,
+    started: Instant,
     pushed: AtomicU64,
     dropped: AtomicU64,
 }
@@ -161,7 +169,7 @@ impl Recorder {
         let (cx, cy) = (width - ew, height - eh);
         let audio = audio_source().map(|s| format!(" {s} ! queue ! audioconvert ! audioresample ! opusenc ! queue ! mux.")).unwrap_or_default();
         let desc = format!(
-            "appsrc name=src is-live=true do-timestamp=true format=time max-buffers=3 leaky-type=downstream \
+            "appsrc name=src is-live=true do-timestamp=false format=time max-buffers=3 leaky-type=downstream \
              ! queue max-size-buffers=3 leaky=downstream \
              ! videocrop left={} right={} top={} bottom={} ! videoconvert n-threads=4 \
              ! video/x-raw,format=NV12 ! {} {} ! {} ! queue ! mp4mux name=mux \
@@ -202,6 +210,7 @@ impl Recorder {
         }
 
         pipeline.set_state(gst::State::Playing)?;
+        let started = Instant::now();
         Ok(Self {
             pipeline,
             src,
@@ -210,6 +219,7 @@ impl Recorder {
             width,
             height,
             format: gst_video::VideoFormat::from_string(format),
+            started,
             pushed: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
         })
@@ -220,6 +230,13 @@ impl Recorder {
         let mut buffer = gst::Buffer::from_mut_slice(data.to_vec());
         {
             let b = buffer.get_mut().unwrap();
+            // appsrc may queue several frames while the live pipeline starts.
+            // Its automatic timestamps can then repeat zero; h264parse clears
+            // duplicate timestamps and mp4mux rejects the resulting buffers.
+            // Preserve the actual spacing of captured frames across startup.
+            let timestamp = gst::ClockTime::from_nseconds(self.started.elapsed().as_nanos().min(u64::MAX as u128 - 1) as u64);
+            b.set_pts(timestamp);
+            b.set_dts(timestamp);
             let strides: &[i32] = if self.format == gst_video::VideoFormat::Nv12 { &[stride as i32, stride as i32] } else { &[stride as i32] };
             let offsets: &[usize] = if self.format == gst_video::VideoFormat::Nv12 { &[0, (stride * self.height) as usize] } else { &[0] };
             let _ = gst_video::VideoMeta::add_full(b, gst_video::VideoFrameFlags::empty(), self.format, self.width, self.height, offsets, strides);
